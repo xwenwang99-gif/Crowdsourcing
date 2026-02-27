@@ -310,6 +310,7 @@ class LFGP():
         iter = 0
         while np.linalg.norm(grad) > 1e-1:
             beta -= 0.001 * grad
+            grad = np.zeros_like(B_init)
             for m in range(M):
                 for c in range(C):
                     conc1[m, c] = np.dot(A[m, :], beta[c, :])  # Logit for task m and class c
