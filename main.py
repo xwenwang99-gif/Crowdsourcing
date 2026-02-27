@@ -28,15 +28,14 @@ import pandas as pd
 from scipy.stats import mode
 import seaborn as sns
 import itertools
-from google.colab import drive
 import numpy as np
 import time
 
 start = time.perf_counter()
 warnings.filterwarnings('ignore')
 
-n_task=200
-n_worker=200
+n_task=1000
+n_worker=1000
 n_task_groups=5
 n_worker_groups=10
 task_accuracy=[]
@@ -115,7 +114,10 @@ for i in range(5):
         hq_worker = np.where(worker_label[:, task_t] == 1)[0]        
         task_data = rating[np.isin(rating[:, 1], hq_worker) & (rating[:, 0] == t)]
         labels = task_data[:, 2]
-        MV_HQ[t] = mode(labels, axis=None).mode
+        if len(labels) == 0:
+            MV_HQ[t] = -1  # or np.nan, or whatever sentinel makes sense for your use case
+        else:
+            MV_HQ[t] = mode(labels, axis=None).mode.item()
         
     task_accuracy_MV_HQ.append(np.mean(MV_HQ == label))
     
@@ -126,7 +128,10 @@ for i in range(5):
     for t in range(n_task):
         task_data = rating[rating[:, 0] == t]
         labels = task_data[:, 2]
-        MV[t] = mode(labels, axis=None).mode
+        if len(labels) == 0:
+            MV[t] = -1
+        else:
+            MV[t] = mode(labels, axis=None).mode.item()
         
     task_accuracy_MV.append(np.mean(MV == label))
     
@@ -191,9 +196,8 @@ results = {
 end = time.perf_counter()
 runtime = end - start
 
-drive.mount('/content/drive')
 df = pd.DataFrame.from_dict(results, orient="index")
-df.to_csv("/content/drive/MyDrive/simulation_results.csv")
+
 
 print(df)
 print("Runtime:", runtime)
