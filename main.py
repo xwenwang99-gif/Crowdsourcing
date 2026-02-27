@@ -30,7 +30,9 @@ import seaborn as sns
 import itertools
 from google.colab import drive
 import numpy as np
+import time
 
+start = time.perf_counter()
 warnings.filterwarnings('ignore')
 
 n_task=1000
@@ -186,11 +188,15 @@ results = {
     }
 }
 
+end = time.perf_counter()
+runtime = end - start
+
 drive.mount('/content/drive')
 df = pd.DataFrame.from_dict(results, orient="index")
 df.to_csv("/content/drive/MyDrive/simulation_results.csv")
 
 print(df)
+print("Runtime:", runtime)
 
 
 
