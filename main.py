@@ -28,7 +28,7 @@ import pandas as pd
 from scipy.stats import mode
 import seaborn as sns
 import itertools
-
+from google.colab import drive
 import numpy as np
 
 warnings.filterwarnings('ignore')
@@ -154,6 +154,43 @@ task_accuracy_mean_multispa = np.mean(task_accuracy_multispa)
 task_accuracy_sd_multisp = np.std(task_accuracy_multispa)
 task_accuracy_mean_glad = np.mean(task_accuracy_glad)
 task_accuracy_sd_glad = np.std(task_accuracy_glad)
+
+results = {
+    "Eigen_L2": {
+        "mean": task_accuracy_mean,
+        "sd": task_accuracy_sd
+    },
+    "DS": {
+        "mean": task_accuracy_mean_ds,
+        "sd": task_accuracy_sd_ds
+    },
+    "MV_HQ": {
+        "mean": task_accuracy_mean_MV_HQ,
+        "sd": task_accuracy_sd_MV_HQ
+    },
+    "MV": {
+        "mean": task_accuracy_mean_MV,
+        "sd": task_accuracy_sd_MV
+    },
+    "GTIC": {
+        "mean": task_accuracy_mean_gtic,
+        "sd": task_accuracy_sd_gtic
+    },
+    "MultiSPA": {
+        "mean": task_accuracy_mean_multispa,
+        "sd": task_accuracy_sd_multisp
+    },
+    "GLAD": {
+        "mean": task_accuracy_mean_glad,
+        "sd": task_accuracy_sd_glad
+    }
+}
+
+drive.mount('/content/drive')
+df = pd.DataFrame.from_dict(results, orient="index")
+df.to_csv("/content/drive/MyDrive/simulation_results.csv")
+
+print(df)
 
 
 
