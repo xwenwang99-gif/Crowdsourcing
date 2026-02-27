@@ -1,0 +1,7 @@
+numpy
+numpy-indexed
+matplotlib
+pandas
+scipy
+seaborn
+peerannot
