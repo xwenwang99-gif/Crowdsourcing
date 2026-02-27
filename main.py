@@ -35,8 +35,8 @@ import time
 start = time.perf_counter()
 warnings.filterwarnings('ignore')
 
-n_task=1000
-n_worker=1000
+n_task=200
+n_worker=200
 n_task_groups=5
 n_worker_groups=10
 task_accuracy=[]
