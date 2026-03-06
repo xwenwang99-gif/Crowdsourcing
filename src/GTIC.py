@@ -18,50 +18,50 @@ class GTICResult:
     centroids: np.ndarray             # (K, K+1) final kmeans centroids
 
 
-    def _compute_u_features(self,
-        L: np.ndarray,
-        K: int,
-        alpha: Optional[np.ndarray] = None,
-        missing_val: int = -1,
-    ) -> np.ndarray:
-        N, J = L.shape
-        if alpha is None:
-            alpha = np.ones(K, dtype=float)
-        alpha = np.asarray(alpha, dtype=float)
-        if alpha.shape != (K,):
-            raise ValueError(f"alpha must have shape (K,), got {alpha.shape}")
-    
-        # ── Step 1: mask out missing values (entire matrix at once) ──
-        mask = (L != missing_val)          # (N, J) boolean
-    
-        # ── Step 2: count votes per class for every task at once ──
-        counts = np.array([
-            np.bincount(L[i][mask[i]].astype(int), minlength=K)
-            if mask[i].any()
-            else np.zeros(K)
-            for i in range(N)
-        ], dtype=float)                    # (N, K)
-    
-        # ── Step 3: Dirichlet-MAP for all tasks in one shot ──
-        N_i = counts.sum(axis=1, keepdims=True)          # (N, 1)  — votes per task
-        denom = N_i + alpha.sum() - K                    # (N, 1)  — broadcast denominator
-        U = (counts + alpha - 1.0) / denom               # (N, K)  — all tasks at once
-    
-        # ── Step 4: handle tasks with no labels (fallback to uniform) ──
-        no_labels = ~mask.any(axis=1)                    # (N,) bool
-        U[no_labels] = 1.0 / K
-    
-        # ── Step 5: clip and renormalize (vectorized) ──
-        U = np.clip(U, 0.0, 1.0)                        # (N, K)
-        row_sums = U.sum(axis=1, keepdims=True)          # (N, 1)
-        row_sums = np.where(row_sums <= 0, 1.0, row_sums)  # avoid divide by zero
-        U = U / row_sums                                 # (N, K) normalized
-    
-        # ── Step 6: compute uz feature for all tasks at once ──
-        uz = (U[:, 1:] - U[:, :-1]).sum(axis=1) / K     # (N,)  telescoping sum
-        feats = np.concatenate([U, uz[:, None]], axis=1) # (N, K+1)
-    
-        return feats
+def _compute_u_features(
+    L: np.ndarray,
+    K: int,
+    alpha: Optional[np.ndarray] = None,
+    missing_val: int = -1,
+) -> np.ndarray:
+    N, J = L.shape
+    if alpha is None:
+        alpha = np.ones(K, dtype=float)
+    alpha = np.asarray(alpha, dtype=float)
+    if alpha.shape != (K,):
+        raise ValueError(f"alpha must have shape (K,), got {alpha.shape}")
+
+    # ── Step 1: mask out missing values (entire matrix at once) ──
+    mask = (L != missing_val)          # (N, J) boolean
+
+    # ── Step 2: count votes per class for every task at once ──
+    counts = np.array([
+        np.bincount(L[i][mask[i]].astype(int), minlength=K)
+        if mask[i].any()
+        else np.zeros(K)
+        for i in range(N)
+    ], dtype=float)                    # (N, K)
+
+    # ── Step 3: Dirichlet-MAP for all tasks in one shot ──
+    N_i = counts.sum(axis=1, keepdims=True)          # (N, 1)  — votes per task
+    denom = N_i + alpha.sum() - K                    # (N, 1)  — broadcast denominator
+    U = (counts + alpha - 1.0) / denom               # (N, K)  — all tasks at once
+
+    # ── Step 4: handle tasks with no labels (fallback to uniform) ──
+    no_labels = ~mask.any(axis=1)                    # (N,) bool
+    U[no_labels] = 1.0 / K
+
+    # ── Step 5: clip and renormalize (vectorized) ──
+    U = np.clip(U, 0.0, 1.0)                        # (N, K)
+    row_sums = U.sum(axis=1, keepdims=True)          # (N, 1)
+    row_sums = np.where(row_sums <= 0, 1.0, row_sums)  # avoid divide by zero
+    U = U / row_sums                                 # (N, K) normalized
+
+    # ── Step 6: compute uz feature for all tasks at once ──
+    uz = (U[:, 1:] - U[:, :-1]).sum(axis=1) / K     # (N,)  telescoping sum
+    feats = np.concatenate([U, uz[:, None]], axis=1) # (N, K+1)
+
+    return feats
 
 
 def _init_centroids_from_u(feats: np.ndarray, K: int) -> np.ndarray:
