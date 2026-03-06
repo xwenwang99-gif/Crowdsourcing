@@ -18,7 +18,7 @@ class GTICResult:
     centroids: np.ndarray             # (K, K+1) final kmeans centroids
 
 
-    def _compute_u_features(
+    def _compute_u_features(self,
         L: np.ndarray,
         K: int,
         alpha: Optional[np.ndarray] = None,
