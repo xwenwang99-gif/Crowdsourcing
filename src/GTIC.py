@@ -39,32 +39,11 @@ def _compute_u_features(
         raise ValueError(f"alpha must have shape (K,), got {alpha.shape}")
 
     U = np.zeros((N, K), dtype=float)
+    
+    mask = (L != missing_val)
+    counts = np.array([np.bincount(row[m].astype(int), minlength=K) 
+                   for row, m in zip(L, mask)], dtype=float)
 
-    for i in range(N):
-        labels_i = L[i]
-        labels_i = labels_i[labels_i != missing_val]
-        if labels_i.size == 0:
-            # No labels: fall back to uniform
-            U[i] = 1.0 / K
-            continue
-        
-        labels_i = labels_i.astype(int)
-        counts = np.bincount(labels_i, minlength=K).astype(float)  # Nk
-        N_i = counts.sum()
-
-        # Dirichlet-MAP from paper Eq(9):
-        # u_k = (Nk + alpha_k - 1) / (N + sum(alpha) - K)
-        denom = N_i + alpha.sum() - K
-        # With alpha=1, denom = N_i; numerator = Nk
-        U[i] = (counts + alpha - 1.0) / denom
-
-        # Numerical guard (should already sum to 1)
-        U[i] = np.clip(U[i], 0.0, 1.0)
-        s = U[i].sum()
-        if s <= 0:
-            U[i] = 1.0 / K
-        else:
-            U[i] /= s
 
     # Additional feature uz (paper Eq(10)):
     # uz = (1/K) * sum_{k=1}^{K-1} (u_{k+1} - u_k)

@@ -81,10 +81,8 @@ def pairwise_cooccurrence(
             xl = L[idx, l].astype(int)
 
             # joint counts
-            mat = np.zeros((K, K), dtype=float)
-            for a, b in zip(xm, xl):
-                if 0 <= a < K and 0 <= b < K:
-                    mat[a, b] += 1.0
+            mat = np.zeros((K,K))
+            mat += np.bincount(xm * K + xl, minlength=K*K).reshape(K, K)
 
             mat /= idx.size  # convert to empirical joint PMF
             Rhat[(m, l)] = mat
@@ -295,16 +293,11 @@ def map_predict_labels(
     K = d.shape[0]
     logd = np.log(d + 1e-12)
 
-    post_log = np.zeros((N, K), dtype=float)
-    for i in range(N):
-        post_log[i] = logd
-        for m in range(M):
-            lab = L[i, m]
-            if lab == missing_val:
-                continue
-            lab = int(lab)
-            if 0 <= lab < K:
-                post_log[i] += np.log(A[m][lab, :] + 1e-12)
+    post_log = np.full((N, K), logd)
+    for m in range(M):
+        mask = (L[:, m] != missing_val)
+        labs = L[mask, m].astype(int)
+        post_log[mask] += np.log(A[m][labs, :] + 1e-12)
 
     # normalize
     post = np.exp(post_log - post_log.max(axis=1, keepdims=True))
