@@ -35,7 +35,7 @@ start = time.perf_counter()
 warnings.filterwarnings('ignore')
 
 n_task=1000
-n_worker=1000
+n_worker=200
 n_task_groups=5
 n_worker_groups=10
 task_accuracy=[]
@@ -72,7 +72,7 @@ for i in range(5):
     # optional: collect metrics across k & groups
 
 
-    model = LFGP(lf_dim=5, n_worker_group=10, lambda1 = 1, lambda2_0 = 1, lambda2_1 = 2)
+    model = LFGP(lf_dim=5, n_worker_group=6, lambda1 = 1, lambda2_0 = 1, lambda2_1 = 2)
     model._prescreen(rating)
     
     _, task_id = np.unique(rating[:, 0], return_inverse=True)
