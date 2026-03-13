@@ -6,333 +6,176 @@ Created on Tue Jan  6 13:03:40 2026
 """
 
 
+# -*- coding: utf-8 -*-
+
 import numpy as np
-
-
-
 
 
 def getdata(
     n_task: int,
     n_worker: int,
     n_task_groups: int,
-    n_worker_groups: int,    
+    n_worker_groups: int,
     k: float = 3.0,
     sigma: float = 1.0,
-    obs_prob=1,
-    noise_group: int = 0
+    obs_prob: float = 1.0,
+    noise_proportion: float = 0.0,
 ):
-    alpha_0 = np.array([k,0,0,0,0])
-    alpha_1 = np.array([0,k,0,0,0])
-    alpha_2 = np.array([0,0,k,0,0])
-    alpha_3 = np.array([0,0,0,k,0])
-    alpha_4 = np.array([0,0,0,0,k])
-    
-    if noise_group==0:
+    """
+    Generate synthetic crowdsourcing data with latent task/worker factors.
 
-        beta11 = np.array([k,0,0,0,0])
-        beta12 = np.array([0,0,0,0,0])
-        beta13 = np.array([0,0,0,0,0])
-        beta14 = np.array([0,0,0,0,0])
-        beta15 = np.array([0,0,0,0,0])
-    
-    
-        beta21 = np.array([0,0,0,0,0])
-        beta22 = np.array([0,k,0,0,0])
-        beta23 = np.array([0,0,0,0,0])
-        beta24 = np.array([0,0,0,0,0])
-        beta25 = np.array([0,0,0,0,0])
-    
-    
-        beta31 = np.array([0,0,0,0,0])
-        beta32 = np.array([0,0,0,0,0])
-        beta33 = np.array([0,0,k,0,0])
-        beta34 = np.array([0,0,0,0,0])
-        beta35 = np.array([0,0,0,0,0])
-    
-        
-        beta41 = np.array([0,0,0,0,0])
-        beta42 = np.array([0,0,0,0,0])
-        beta43 = np.array([0,0,0,0,0])
-        beta44 = np.array([0,0,0,k,0])
-        beta45 = np.array([0,0,0,0,0])
-    
-        
-        beta51 = np.array([0,0,0,0,0])
-        beta52 = np.array([0,0,0,0,0])
-        beta53 = np.array([0,0,0,0,0])
-        beta54 = np.array([0,0,0,0,0])
-        beta55 = np.array([0,0,0,0,k])
-    
-    
-        A = np.zeros((n_task, 5))
-        B1 = np.zeros((n_worker, 5))
-        B2 = np.zeros((n_worker, 5))
-        B3 = np.zeros((n_worker, 5))
-        B4 = np.zeros((n_worker, 5))
-        B5 = np.zeros((n_worker, 5))
-    
-        A[:n_task//5, :] = np.random.multivariate_normal(alpha_0, sigma * np.eye(5), n_task//5)
-        A[n_task//5: 2*n_task//5, :] = np.random.multivariate_normal(alpha_1, sigma * np.eye(5), n_task//5)
-        A[2*n_task//5: 3*n_task//5, :] = np.random.multivariate_normal(alpha_2, sigma *np.eye(5), n_task//5)
-        A[3*n_task//5: 4*n_task//5, :] = np.random.multivariate_normal(alpha_3, sigma * np.eye(5), n_task//5)
-        A[4*n_task//5:, :] = np.random.multivariate_normal(alpha_4, sigma * np.eye(5), n_task//5)
-    
-        B1[:n_worker//5, :] = np.random.multivariate_normal(beta11, sigma *np.eye(5), n_worker//5)
-        B1[n_worker//5: , :] = np.random.random((n_worker*4//5, 5)) * 2 * k - k
-    
-        B2[:n_worker//5, :] = np.random.random((n_worker//5, 5)) * 2 * k - k
-        B2[n_worker//5: 2*n_worker//5, :] = np.random.multivariate_normal(beta22, sigma *np.eye(5), n_worker//5)
-        B2[2*n_worker//5: , :] = np.random.random((n_worker*3//5, 5)) * 2 * k - k
-        
-        B3[:2*n_worker//5, :] = np.random.random((2*n_worker//5, 5)) * 2 * k - k
-        B3[2*n_worker//5: 3*n_worker//5, :] = np.random.multivariate_normal(beta33,sigma * np.eye(5), n_worker//5)
-        B3[3*n_worker//5: , :] = np.random.random((2*n_worker//5, 5)) * 2 * k - k
-        
-        B4[:3*n_worker//5, :] = np.random.random((n_worker*3//5, 5)) * 2 * k - k
-        B4[3*n_worker//5:4*n_worker//5, :] = np.random.multivariate_normal(beta44, sigma *np.eye(5), n_worker//5)
-        B4[4*n_worker//5: , :] = np.random.random((n_worker//5, 5)) * 2 * k - k
-        
-        B5[:4*n_worker//5, :] = np.random.random((4*n_worker//5, 5)) * 2 * k - k
-        B5[4*n_worker//5: , :] = np.random.multivariate_normal(beta55, sigma *np.eye(5), n_worker//5)
-        
-                
-        worker_label = np.zeros((n_worker, n_task_groups))
-        worker_label[:, 0] = np.array([1] * (n_worker // 5) + [0] * (n_worker // 5 * 4))
-        worker_label[:, 1] = np.array([0] * (n_worker // 5) + [1] * (n_worker // 5) + ([0]*(n_worker // 5*3)))
-        worker_label[:, 2] = np.array([0] * (n_worker // 5 * 2) + [1]*(n_worker // 5) + [0]*(n_worker // 5 * 2))
-        worker_label[:, 3] = np.array([0] * (n_worker // 5 * 3) + [1]*(n_worker // 5) + [0]*(n_worker // 5 ))
-        worker_label[:, 4] = np.array([0] * (n_worker // 5 * 4) + [1] * (n_worker // 5))
-    if noise_group==2:
-        beta11 = np.array([k,0,0,0,0])
-        beta12 = np.array([0,0,0,0,0])
-        beta13 = np.array([0,0,0,0,0])
-        beta14 = np.array([0,0,0,0,0])
-        beta15 = np.array([0,0,0,0,0])
-        beta16 = np.array([0,0,0,0,0])
-        beta17 = np.array([0,0,0,0,0])
-    
-    
-        beta21 = np.array([0,0,0,0,0])
-        beta22 = np.array([0,k,0,0,0])
-        beta23 = np.array([0,0,0,0,0])
-        beta24 = np.array([0,0,0,0,0])
-        beta25 = np.array([0,0,0,0,0])
-        beta26 = np.array([0,0,0,0,0])
-        beta27 = np.array([0,0,0,0,0])
-    
-        beta31 = np.array([0,0,0,0,0])
-        beta32 = np.array([0,0,0,0,0])
-        beta33 = np.array([0,0,k,0,0])
-        beta34 = np.array([0,0,0,0,0])
-        beta35 = np.array([0,0,0,0,0])
-        beta36 = np.array([0,0,0,0,0])
-        beta37 = np.array([0,0,0,0,0])
-    
-        
-        beta41 = np.array([0,0,0,0,0])
-        beta42 = np.array([0,0,0,0,0])
-        beta43 = np.array([0,0,0,0,0])
-        beta44 = np.array([0,0,0,k,0])
-        beta45 = np.array([0,0,0,0,0])
-        beta46 = np.array([0,0,0,0,0])
-        beta47 = np.array([0,0,0,0,0])
-    
-        
-        beta51 = np.array([0,0,0,0,0])
-        beta52 = np.array([0,0,0,0,0])
-        beta53 = np.array([0,0,0,0,0])
-        beta54 = np.array([0,0,0,0,0])
-        beta55 = np.array([0,0,0,0,k])
-        beta56 = np.array([0,0,0,0,0])
-        beta57 = np.array([0,0,0,0,0])
-    
-    
-        A = np.zeros((n_task, 5))
-        B1 = np.zeros((n_worker, 5))
-        B2 = np.zeros((n_worker, 5))
-        B3 = np.zeros((n_worker, 5))
-        B4 = np.zeros((n_worker, 5))
-        B5 = np.zeros((n_worker, 5))
+    Parameters
+    ----------
+    n_task : int
+        Total number of tasks. Must be divisible by n_task_groups.
+    n_worker : int
+        Total number of workers.
+    n_task_groups : int
+        Number of task groups (currently fixed at 5).
+    n_worker_groups : int
+        Number of HQ worker groups (currently fixed at 5, one per task group).
+    k : float
+        Signal strength for latent factors. Higher = more separated groups.
+    sigma : float
+        Noise standard deviation on latent factor draws.
+    obs_prob : float
+        Fraction of workers that observe each task (in [0, 1]).
+    noise_proportion : float
+        Fraction of workers that are pure noise (not HQ for any task group).
+        Must be in [0, 1). The remaining (1 - noise_proportion) workers are
+        split equally across the n_worker_groups HQ groups.
 
-    
-        A[:n_task//5, :] = np.random.multivariate_normal(alpha_0, sigma * np.eye(5), n_task//5)
-        A[n_task//5: 2*n_task//5, :] = np.random.multivariate_normal(alpha_1, sigma * np.eye(5), n_task//5)
-        A[2*n_task//5: 3*n_task//5, :] = np.random.multivariate_normal(alpha_2, sigma *np.eye(5), n_task//5)
-        A[3*n_task//5: 4*n_task//5, :] = np.random.multivariate_normal(alpha_3, sigma * np.eye(5), n_task//5)
-        A[4*n_task//5:, :] = np.random.multivariate_normal(alpha_4, sigma * np.eye(5), n_task//5)
-    
-        B1[:n_worker//7, :] = np.random.multivariate_normal(beta11, sigma *np.eye(5), n_worker//7)
-        B1[n_worker//7: , :] = np.random.random((n_worker*6//7, 5)) * 2 * k - k
-    
-        B2[:n_worker//7, :] = np.random.random((n_worker//7, 5)) * 2 * k - k
-        B2[n_worker//7: 2*n_worker//7, :] = np.random.multivariate_normal(beta22, sigma *np.eye(5), n_worker//7)
-        B2[2*n_worker//7: , :] = np.random.random((n_worker*5//7, 5)) * 2 * k - k
-        
-        B3[:2*n_worker//7, :] = np.random.random((2*n_worker//7, 5)) * 2 * k - k
-        B3[2*n_worker//7: 3*n_worker//7, :] = np.random.multivariate_normal(beta33,sigma * np.eye(5), n_worker//7)
-        B3[3*n_worker//7: , :] = np.random.random((4*n_worker//7, 5)) * 2 * k - k
-        
-        B4[:3*n_worker//7, :] = np.random.random((n_worker*3//7, 5)) * 2 * k - k
-        B4[3*n_worker//7:4*n_worker//7, :] = np.random.multivariate_normal(beta44, sigma *np.eye(5), n_worker//7)
-        B4[4*n_worker//7: , :] = np.random.random((3*n_worker//7, 5)) * 2 * k - k
-        
-        B5[:4*n_worker//7, :] = np.random.random((4*n_worker//7, 5)) * 2 * k - k
-        B5[4*n_worker//7:5*n_worker//7 , :] = np.random.multivariate_normal(beta55, sigma *np.eye(5), n_worker//7)
-        B5[5*n_worker//7: , :] = np.random.random((2*n_worker//7, 5)) * 2 * k - k  
-   
-        worker_label = np.zeros((n_worker, n_task_groups))
-        worker_label[:, 0] = np.array([1] * (n_worker // 7) + [0] * (n_worker // 7 * 6))
-        worker_label[:, 1] = np.array([0] * (n_worker // 7) + [1] * (n_worker // 7) + ([0]*(n_worker // 7*5)))
-        worker_label[:, 2] = np.array([0] * (n_worker // 7 * 2) + [1]*(n_worker // 7) + [0]*(n_worker // 7 * 4))
-        worker_label[:, 3] = np.array([0] * (n_worker // 7 * 3) + [1]*(n_worker // 7) + [0]*(n_worker // 7 * 3))
-        worker_label[:, 4] = np.array([0] * (n_worker // 7 * 4) + [1] * (n_worker // 7) + [0]*(n_worker // 7 * 2))
-    
-    if noise_group==5:
-        beta11 = np.array([k,0,0,0,0])
-        beta12 = np.array([0,0,0,0,0])
-        beta13 = np.array([0,0,0,0,0])
-        beta14 = np.array([0,0,0,0,0])
-        beta15 = np.array([0,0,0,0,0])
-        beta16 = np.array([0,0,0,0,0])
-        beta17 = np.array([0,0,0,0,0])
-        beta18 = np.array([0,0,0,0,0])
-        beta19 = np.array([0,0,0,0,0])
-        beta10 = np.array([0,0,0,0,0])
-    
-    
-        beta21 = np.array([0,0,0,0,0])
-        beta22 = np.array([0,k,0,0,0])
-        beta23 = np.array([0,0,0,0,0])
-        beta24 = np.array([0,0,0,0,0])
-        beta25 = np.array([0,0,0,0,0])
-        beta26 = np.array([0,0,0,0,0])
-        beta27 = np.array([0,0,0,0,0])
-        beta28 = np.array([0,0,0,0,0])
-        beta29 = np.array([0,0,0,0,0])
-        beta20 = np.array([0,0,0,0,0])
-    
-        beta31 = np.array([0,0,0,0,0])
-        beta32 = np.array([0,0,0,0,0])
-        beta33 = np.array([0,0,k,0,0])
-        beta34 = np.array([0,0,0,0,0])
-        beta35 = np.array([0,0,0,0,0])
-        beta36 = np.array([0,0,0,0,0])
-        beta37 = np.array([0,0,0,0,0])
-        beta38 = np.array([0,0,0,0,0])
-        beta39 = np.array([0,0,0,0,0])
-        beta30 = np.array([0,0,0,0,0])
-    
-        
-        beta41 = np.array([0,0,0,0,0])
-        beta42 = np.array([0,0,0,0,0])
-        beta43 = np.array([0,0,0,0,0])
-        beta44 = np.array([0,0,0,k,0])
-        beta45 = np.array([0,0,0,0,0])
-        beta46 = np.array([0,0,0,0,0])
-        beta47 = np.array([0,0,0,0,0])
-        beta48 = np.array([0,0,0,0,0])
-        beta49 = np.array([0,0,0,0,0])
-        beta40 = np.array([0,0,0,0,0])
-    
-        
-        beta51 = np.array([0,0,0,0,0])
-        beta52 = np.array([0,0,0,0,0])
-        beta53 = np.array([0,0,0,0,0])
-        beta54 = np.array([0,0,0,0,0])
-        beta55 = np.array([0,0,0,0,k])
-        beta56 = np.array([0,0,0,0,0])
-        beta57 = np.array([0,0,0,0,0])
-        beta58 = np.array([0,0,0,0,0])
-        beta59 = np.array([0,0,0,0,0])
-        beta50 = np.array([0,0,0,0,0])
-    
-    
-        A = np.zeros((n_task, 5))
-        B1 = np.zeros((n_worker, 5))
-        B2 = np.zeros((n_worker, 5))
-        B3 = np.zeros((n_worker, 5))
-        B4 = np.zeros((n_worker, 5))
-        B5 = np.zeros((n_worker, 5))
+    Returns
+    -------
+    rating : np.ndarray, shape (n_obs, 3)
+        Observed ratings as rows of [task_id, worker_id, label].
+    label : np.ndarray, shape (n_task,)
+        True task group labels (0 to n_task_groups - 1).
+    worker_label : np.ndarray, shape (n_worker, n_task_groups)
+        Binary matrix indicating which workers are HQ for each task group.
+        Noise workers have all-zero rows.
+    R_obs : np.ndarray, shape (n_task, n_worker)
+        Observed rating matrix with np.nan for unobserved entries.
+    """
+    assert 0.0 <= noise_proportion < 1.0, "noise_proportion must be in [0, 1)"
+    assert n_task % n_task_groups == 0, "n_task must be divisible by n_task_groups"
 
-    
-        A[:n_task//5, :] = np.random.multivariate_normal(alpha_0, sigma * np.eye(5), n_task//5)
-        A[n_task//5: 2*n_task//5, :] = np.random.multivariate_normal(alpha_1, sigma * np.eye(5), n_task//5)
-        A[2*n_task//5: 3*n_task//5, :] = np.random.multivariate_normal(alpha_2, sigma *np.eye(5), n_task//5)
-        A[3*n_task//5: 4*n_task//5, :] = np.random.multivariate_normal(alpha_3, sigma * np.eye(5), n_task//5)
-        A[4*n_task//5:, :] = np.random.multivariate_normal(alpha_4, sigma * np.eye(5), n_task//5)
-    
-        B1[:n_worker//10, :] = np.random.multivariate_normal(beta11, sigma *np.eye(5), n_worker//10)
-        B1[n_worker//10: , :] = np.random.random((n_worker*9//10, 5)) * 2 * k - k
-    
-        B2[:n_worker//10, :] = np.random.random((n_worker//10, 5)) * 2 * k - k
-        B2[n_worker//10: 2*n_worker//10, :] = np.random.multivariate_normal(beta22, sigma *np.eye(5), n_worker//10)
-        B2[2*n_worker//10: , :] = np.random.random((n_worker*8//10, 5)) * 2 * k - k
-        
-        B3[:2*n_worker//10, :] = np.random.random((2*n_worker//10, 5)) * 2 * k - k
-        B3[2*n_worker//10: 3*n_worker//10, :] = np.random.multivariate_normal(beta33,sigma * np.eye(5), n_worker//10)
-        B3[3*n_worker//10: , :] = np.random.random((7*n_worker//10, 5)) * 2 * k - k
-        
-        B4[:3*n_worker//10, :] = np.random.random((n_worker*3//10, 5)) * 2 * k - k
-        B4[3*n_worker//10:4*n_worker//10, :] = np.random.multivariate_normal(beta44, sigma *np.eye(5), n_worker//10)
-        B4[4*n_worker//10: , :] = np.random.random((6*n_worker//10, 5)) * 2 * k - k
-        
-        B5[:4*n_worker//10, :] = np.random.random((4*n_worker//10, 5)) * 2 * k - k
-        B5[4*n_worker//10:5*n_worker//10 , :] = np.random.multivariate_normal(beta55, sigma *np.eye(5), n_worker//10)
-        B5[5*n_worker//10: , :] = np.random.random((5*n_worker//10, 5)) * 2 * k - k  
-   
-        worker_label = np.zeros((n_worker, n_task_groups))
-        worker_label[:, 0] = np.array([1] * (n_worker // 10) + [0] * (n_worker // 10 * 9))
-        worker_label[:, 1] = np.array([0] * (n_worker // 10) + [1] * (n_worker // 10) + ([0]*(n_worker // 10*8)))
-        worker_label[:, 2] = np.array([0] * (n_worker // 10 * 2) + [1]*(n_worker // 10) + [0]*(n_worker // 10 * 7))
-        worker_label[:, 3] = np.array([0] * (n_worker // 10 * 3) + [1]*(n_worker // 10) + [0]*(n_worker // 10 * 6))
-        worker_label[:, 4] = np.array([0] * (n_worker // 10 * 4) + [1] * (n_worker // 10) + [0]*(n_worker // 10 * 5))
-    
-    label = np.array([0] * (n_task // 5) + [1] * (n_task // 5) + [2] * (n_task // 5)+ [3] * (n_task // 5)+ [4] * (n_task // 5))
-    
-    R_tsr = np.zeros((n_task, n_worker, 5))
-    R_tsr[:, :, 0] = A.dot(B1.T)
-    R_tsr[:, :, 1] = A.dot(B2.T)
-    R_tsr[:, :, 2] = A.dot(B3.T)
-    R_tsr[:, :, 3] = A.dot(B4.T)
-    R_tsr[:, :, 4] = A.dot(B5.T)
-    
+    n_dim = 5  # latent dimension (fixed at 5)
+
+    # -----------------------------------------------------------------------
+    # 1. Compute worker group sizes
+    # -----------------------------------------------------------------------
+    n_noise_workers = int(round(n_worker * noise_proportion))
+    n_hq_workers = n_worker - n_noise_workers
+
+    # Each HQ group gets an equal share of the non-noise workers
+    hq_group_size = n_hq_workers // n_worker_groups
+    # Any remainder goes to noise (keeps indexing clean)
+    n_noise_workers += n_hq_workers - hq_group_size * n_worker_groups
+    n_hq_workers = hq_group_size * n_worker_groups
+
+    # Worker index layout:
+    #   [0 .. hq_group_size-1]             → HQ group 0 (expert on task group 0)
+    #   [hq_group_size .. 2*hq_group_size-1] → HQ group 1
+    #   ...
+    #   [n_hq_workers .. n_worker-1]       → noise workers
+
+    # -----------------------------------------------------------------------
+    # 2. Task latent factors  A  (n_task x n_dim)
+    #    Tasks in group g are drawn from a mean vector with k in position g.
+    # -----------------------------------------------------------------------
+    tasks_per_group = n_task // n_task_groups
+
+    A = np.zeros((n_task, n_dim))
+    for g in range(n_task_groups):
+        mean = np.zeros(n_dim)
+        mean[g] = k
+        start = g * tasks_per_group
+        end = start + tasks_per_group
+        A[start:end, :] = np.random.multivariate_normal(mean, sigma * np.eye(n_dim), tasks_per_group)
+
+    # -----------------------------------------------------------------------
+    # 3. Worker latent factors  B_c  for each label class c  (n_worker x n_dim)
+    #
+    #    For HQ group g:  mean vector for class c = k * e_c  if c == g, else 0
+    #      → worker in HQ group g has a strong response in dimension g for class g
+    #    For noise workers: uniform random in [-k, k] for every class
+    # -----------------------------------------------------------------------
+    # B[c] is the factor matrix used to score label class c
+    B = np.zeros((n_dim, n_worker, n_dim))   # B[c, worker, dim]
+
+    for g in range(n_worker_groups):
+        start_w = g * hq_group_size
+        end_w = start_w + hq_group_size
+
+        for c in range(n_dim):
+            mean = np.zeros(n_dim)
+            if c == g:
+                mean[c] = k          # HQ signal: strong alignment with task group g
+            # else mean stays zero → neutral / random behaviour on other classes
+            B[c, start_w:end_w, :] = np.random.multivariate_normal(
+                mean, sigma * np.eye(n_dim), hq_group_size
+            )
+
+    # Noise workers: random uniform in [-k, k] for all classes
+    if n_noise_workers > 0:
+        start_noise = n_hq_workers
+        for c in range(n_dim):
+            B[c, start_noise:, :] = np.random.uniform(-k, k, size=(n_noise_workers, n_dim))
+
+    # -----------------------------------------------------------------------
+    # 4. Compute rating probabilities via softmax over label classes
+    #    R_tsr[i, j, c] = A[i] · B[c, j]
+    # -----------------------------------------------------------------------
+    # Shape: (n_task, n_worker, n_dim)
+    R_tsr = np.einsum("id,cjd->ijc", A, B)
+
+    # Numerically stable softmax along class axis
+    R_tsr -= R_tsr.max(axis=2, keepdims=True)
     exp_logits = np.exp(R_tsr)
-    probs = np.zeros((n_task,n_worker,5))
+    probs = exp_logits / exp_logits.sum(axis=2, keepdims=True)  # (n_task, n_worker, n_dim)
+
+    # -----------------------------------------------------------------------
+    # 5. Sample observed labels
+    # -----------------------------------------------------------------------
+    # Vectorised multinomial draw: for each (task, worker) pair pick a class
+    probs_flat = probs.reshape(-1, n_dim)                        # (n_task*n_worker, n_dim)
+    cumprobs = probs_flat.cumsum(axis=1)
+    u = np.random.uniform(size=(probs_flat.shape[0], 1))
+    R_full = (u < cumprobs).argmax(axis=1).reshape(n_task, n_worker)   # (n_task, n_worker)
+
+    # -----------------------------------------------------------------------
+    # 6. Apply observation mask (obs_prob)
+    # -----------------------------------------------------------------------
+    records = []
     for i in range(n_task):
-        for j in range(n_worker):
-            probs[i,j] = exp_logits[i,j] / np.sum(exp_logits[i,j,:])
-    R = np.zeros((n_task, n_worker), dtype=int)
-    
-    for i in range(n_task):
-        for j in range(n_worker):
-            R[i, j] = np.random.choice(5, p=probs[i, j, :])
+        sub_n_worker = max(1, int(n_worker * obs_prob))
+        sub_workers = np.sort(
+            np.random.choice(np.arange(n_worker), size=sub_n_worker, replace=False)
+        )
+        tmp = np.column_stack([
+            np.full(sub_n_worker, i),
+            sub_workers,
+            R_full[i, sub_workers],
+        ])
+        records.append(tmp)
 
-    l = []
+    rating = np.concatenate(records, axis=0).astype(int)
 
-    
-    for i in range(n_task):
-
-        sub_n_worker = int(n_worker * obs_prob)
-        sub_worker = np.sort(np.random.choice(np.arange(n_worker), size=sub_n_worker, replace=False))
-        #sub_worker = [np.repeat(1,70),np.repeat(2,70),]
-        tmp_data = np.zeros((sub_n_worker, 3))
-        tmp_data[:, 0] = i
-        tmp_data[:, 1] = sub_worker
-        tmp_data[:, 2] = R[i, sub_worker]
-        l.append(tmp_data)
-
-    rating = np.concatenate(l, axis=0)
-    
     R_obs = np.full((n_task, n_worker), np.nan)
+    R_obs[rating[:, 0], rating[:, 1]] = rating[:, 2]
 
-    task_ids = rating[:, 0].astype(int)
-    worker_ids = rating[:, 1].astype(int)
-    labels_obs = rating[:, 2].astype(int)
-    
-    R_obs[task_ids, worker_ids] = labels_obs
-    
-    
-    
+    # -----------------------------------------------------------------------
+    # 7. Ground-truth labels
+    # -----------------------------------------------------------------------
+    label = np.repeat(np.arange(n_task_groups), tasks_per_group)
+
+    # worker_label[j, g] = 1  iff worker j is HQ for task group g
+    worker_label = np.zeros((n_worker, n_task_groups), dtype=int)
+    for g in range(n_task_groups):
+        start_w = g * hq_group_size
+        end_w = start_w + hq_group_size
+        worker_label[start_w:end_w, g] = 1
+
     return rating, label, worker_label, R_obs
     
