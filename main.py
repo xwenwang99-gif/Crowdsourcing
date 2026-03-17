@@ -36,8 +36,8 @@ warnings.filterwarnings('ignore')
 
 n_task=200
 n_worker=200
-n_task_groups=5
-n_worker_groups=10
+n_task_groups=10
+n_worker_groups=20
 task_accuracy=[]
 task_accuracy_ds=[]
 task_accuracy_MV= []
@@ -67,8 +67,7 @@ for i in range(5):
     
     rating, label, worker_label, R_obs = getdata(n_task, 
     n_worker,
-    n_task_groups,
-    n_worker_groups,    
+    n_task_groups,   
     k=2,
     sigma= 1.0,
     obs_prob=0.3,
@@ -81,7 +80,7 @@ for i in range(5):
     # optional: collect metrics across k & groups
 
     if eigen_ex:
-        model = LFGP(lf_dim=5, n_worker_group=6, lambda1 = 1, lambda2_0 = 1, lambda2_1 = 2)
+        model = LFGP(lf_dim=10, n_worker_group=11, lambda1 = 1, lambda2_0 = 1, lambda2_1 = 2)
         model._prescreen(rating)
         
         _, task_id = np.unique(rating[:, 0], return_inverse=True)
@@ -97,7 +96,7 @@ for i in range(5):
         # Ensure U is integer group labels for tasks
         
         pred_group = U.astype(int) 
-        '''
+        
         temp_taskAccuracy, task_label_pred, hq_workers_pred = _hq_and_label_infer(pred_group, 
                                 R_obs,
                                 label,
@@ -113,7 +112,7 @@ for i in range(5):
         '''
         U_mv_by_task = model._mc_infer_by_task(rating)
         temp_taskAccuracy = np.mean(U_mv_by_task==label)
-        
+        '''
         task_accuracy.append(temp_taskAccuracy)
     if DS_ex:
         pred_label_ds = model._init_task_member_ds(rating)
