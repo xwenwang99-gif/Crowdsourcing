@@ -82,31 +82,59 @@ class LFGP():
         return label
     
     def _init_worker_member_acc(self, data, label):
-        worker = np.unique(data[:, 1])  # Worker index
-        acc = np.zeros((self.n_worker, self.n_task_group))  # Accuracy per task group
-        member = np.zeros((self.n_worker, self.n_task_group), dtype=int)  # Worker groups
+        worker = np.unique(data[:, 1])
+        acc        = np.zeros((self.n_worker, self.n_task_group))
+        bias_score = np.zeros((self.n_worker, self.n_task_group))
+        member     = np.zeros((self.n_worker, self.n_task_group), dtype=int)
     
         for t_group in range(self.n_task_group):
             for i in range(self.n_worker):
-                # Get data for the worker in this task group
                 crowd_w = data[
-                    (data[:, 1] == worker[i]) & 
+                    (data[:, 1] == worker[i]) &
                     (label[data[:, 0].astype(int), 1] == t_group)
                 ]
-                if crowd_w.shape[0] > 0:
-                    task_w = crowd_w[:, 0]
-                    acc[i, t_group] = (
-                        sum(label[np.isin(label[:, 0], task_w), 1] == crowd_w[:, 2])
-                        / crowd_w.shape[0]
-                    )
+                if crowd_w.shape[0] == 0:
+                    acc[i, t_group]        = 0
+                    bias_score[i, t_group] = 0
+                    continue
+    
+                task_w        = crowd_w[:, 0].astype(int)
+                true_labels   = label[np.isin(label[:, 0], task_w), 1]
+                worker_labels = crowd_w[:, 2]
+    
+                # Accuracy: fraction of correct labels
+                acc[i, t_group] = np.mean(true_labels == worker_labels)
+    
+                # Bias score: among incorrect responses, how concentrated
+                # are they on a single wrong label?
+                # A purely biased worker scores 1.0, a random worker scores ~1/K
+                wrong_mask = (true_labels != worker_labels)
+                wrong_labels = worker_labels[wrong_mask]
+                if len(wrong_labels) > 0:
+                    counts = np.bincount(wrong_labels.astype(int),
+                                         minlength=self.n_task_group)
+                    bias_score[i, t_group] = counts.max() / len(wrong_labels)
                 else:
-                    # If no data, assign lowest accuracy
-                    acc[i, t_group] = 0
-
+                    # All correct — HQ worker, bias score irrelevant
+                    bias_score[i, t_group] = 0
+    
         for t_group in range(self.n_task_group):
             median_acc = np.median(acc[:, t_group])
-            # Group 1 if above median, else Group 0
-            member[:, t_group] = (acc[:, t_group] > median_acc).astype(int)
+    
+            for i in range(self.n_worker):
+                if acc[i, t_group] > median_acc:
+                    # Above median accuracy → HQ
+                    member[i, t_group] = 1
+                else:
+                    # Below median — use bias score to distinguish
+                    # biased (concentrated errors) from LQ (random errors)
+                    median_bias = np.median(
+                        bias_score[acc[:, t_group] <= median_acc, t_group]
+                    )
+                    if bias_score[i, t_group] > median_bias:
+                        member[i, t_group] = 2   # biased
+                    else:
+                        member[i, t_group] = 0   # LQ
     
         return member
 
@@ -229,11 +257,17 @@ class LFGP():
         for j in range(n_task_group):
             mask0 = (V[:, j] == 0)
             mask1 = (V[:, j] == 1)
+            mask0 = (V[:, j] == 0)
+            mask1 = (V[:, j] == 1)
+            mask2 = (V[:, j] == 2)
             if mask0.any():
                 penalty2 += lambda2_0 * torch.linalg.norm(B[mask0, j, :])
             if mask1.any():
                 center1 = clusters[1, :, j]
                 penalty2 += lambda2_1 * torch.linalg.norm(B[mask1, j, :] - center1)
+            if mask2.any():
+                center2 = clusters[2, :, j]
+                penalty2 += lambda2_1 * torch.linalg.norm(B[mask2, j, :] - center2)
     
         return (loss + penalty1 + penalty2).item()
     
@@ -341,8 +375,15 @@ class LFGP():
                 Y = obs_labels                  # (M,)
                 beta = B[w].clone()             # (C, k)
                 worker_group = int(V[w, group].item())
-                lambd = lambda2_1 if worker_group == 1 else lambda2_0
-                centroid = clusters[worker_group, :, group]  # (k,)
+                if worker_group == 0:
+                    lambd = lambda2_0
+                    centroid = clusters[0, :, group]   # LQ: pulls toward origin
+                elif worker_group == 1:
+                    lambd = lambda2_1
+                    centroid = clusters[1, :, group]   # HQ: pulls toward HQ centroid
+                else:  # worker_group == 2
+                    lambd = lambda2_1                  # biased: same strength as HQ
+                    centroid = clusters[2, :, group]   # pulls toward biased centroid
     
                 for _ in range(max_iter):
                     # conc1[m,c] = A[m,:] @ beta[c,:]  →  A @ beta.T  (M, C)
@@ -386,29 +427,65 @@ class LFGP():
     
         return np.array(Grp_perm)
     
-    def new_kmeans_gpu(self,X, lf_dim, n_worker, max_iter=300, tol=1e-4):
+    def new_kmeans_gpu_3cluster(self, X, lf_dim, n_worker, max_iter=300, tol=1e-4):
         """
-        2-cluster KMeans where center[0] is fixed at 0.
-        X: (n_worker, lf_dim) torch tensor on DEVICE
-        Returns: labels (n_worker,), centers (2, lf_dim)  — both on DEVICE
+        3-cluster KMeans with the following structure matching the new penalty:
+          center[0] = fixed at origin          (LQ workers,     W=0)
+          center[1] = free HQ centroid         (HQ workers,     W=1)
+          center[2] = biased centroid,         (biased workers, W=2)
+                      orthogonalized against center[1] after each update
+    
+        X      : (n_worker, lf_dim) torch tensor on DEVICE
+        Returns: labels  (n_worker,)     — 0=LQ, 1=HQ, 2=biased
+                 centers (3, lf_dim)     — both on DEVICE
         """
-        centers = torch.zeros(2, lf_dim, device=DEVICE)
+        centers = torch.zeros(3, lf_dim, device=DEVICE)
+    
+        # Initialise center[1] (HQ) as the worker with the largest norm
         norms = torch.linalg.norm(X, dim=1)
         centers[1] = X[torch.argmax(norms)]
+    
+        # Initialise center[2] (biased) as the worker with the largest norm
+        # in the direction orthogonal to center[1]
+        proj = (X @ centers[1]) / (torch.linalg.norm(centers[1]) ** 2 + 1e-12)
+        X_orth = X - proj.unsqueeze(1) * centers[1].unsqueeze(0)  # (n_worker, lf_dim)
+        orth_norms = torch.linalg.norm(X_orth, dim=1)
+        centers[2] = X[torch.argmax(orth_norms)]
+        # Immediately orthogonalize center[2] against center[1]
+        centers[2] = centers[2] - (
+            (centers[2] @ centers[1]) /
+            (torch.linalg.norm(centers[1]) ** 2 + 1e-12)
+        ) * centers[1]
     
         labels = torch.zeros(n_worker, dtype=torch.long, device=DEVICE)
     
         for _ in range(max_iter):
-            # distances: (n_worker, 2)
-            diff = X.unsqueeze(1) - centers.unsqueeze(0)   # (N, 2, k)
-            distances = torch.linalg.norm(diff, dim=2)      # (N, 2)
+            # ── Assignment step ──────────────────────────────────────────
+            # distances: (n_worker, 3)
+            diff = X.unsqueeze(1) - centers.unsqueeze(0)   # (n_worker, 3, lf_dim)
+            distances = torch.linalg.norm(diff, dim=2)      # (n_worker, 3)
             new_labels = torch.argmin(distances, dim=1)
     
+            # ── Update step ──────────────────────────────────────────────
             new_centers = centers.clone()
-            pts1 = X[new_labels == 1]
-            if len(pts1) > 0:
-                new_centers[1] = pts1.mean(0)
     
+            # center[0] stays fixed at origin — never updated
+            # center[1]: mean of HQ-assigned workers
+            pts_hq = X[new_labels == 1]
+            if len(pts_hq) > 0:
+                new_centers[1] = pts_hq.mean(0)
+    
+            # center[2]: mean of biased-assigned workers, then project ⊥ center[1]
+            pts_bias = X[new_labels == 2]
+            if len(pts_bias) > 0:
+                gamma_raw = pts_bias.mean(0)
+                # Gram-Schmidt: remove component along center[1]
+                new_centers[2] = gamma_raw - (
+                    (gamma_raw @ new_centers[1]) /
+                    (torch.linalg.norm(new_centers[1]) ** 2 + 1e-12)
+                ) * new_centers[1]
+    
+            # ── Convergence check ────────────────────────────────────────
             if torch.all(torch.abs(new_centers - centers) < tol):
                 labels = new_labels
                 centers = new_centers
@@ -417,13 +494,17 @@ class LFGP():
             centers = new_centers
             labels = new_labels
     
-        # Swap labels so that center[1] has larger norm than center[0]
-        if torch.linalg.norm(centers[1]) < torch.linalg.norm(centers[0]):
-            labels = 1 - labels
+        # ── Label disambiguation ─────────────────────────────────────────
+        # Ensure center[1] (HQ) has larger norm than center[2] (biased).
+        # If not, swap labels 1 and 2 so the stronger non-zero centroid
+        # is always called HQ — the eigendecomposition step will
+        # resolve which is truly HQ vs biased downstream.
+        if torch.linalg.norm(centers[2]) > torch.linalg.norm(centers[1]):
+            swap_mask = (labels == 1) | (labels == 2)
+            labels[swap_mask] = 3 - labels[swap_mask]   # 1↔2
+            centers[[1, 2]] = centers[[2, 1]]
     
         return labels, centers
-    
-    
 
 
 
@@ -484,7 +565,7 @@ class LFGP():
                 worker_groups.append((t_idx, labels))
             obs_idx_per_worker_group.append(worker_groups)
     
-        clusters = torch.zeros(2, lf_dim, n_task_group, device=DEVICE)
+        clusters = torch.zeros(3, lf_dim, n_task_group, device=DEVICE)
         loss_prev = float("inf")
         loss_history = []
     
@@ -526,7 +607,7 @@ class LFGP():
             # ── Update V via GPU KMeans ──
             for t in range(n_task_group):
                 B_slice = B[:, t, :]   # (n_worker, k)
-                labels, centers = self.new_kmeans_gpu(B_slice, lf_dim, self.n_worker)
+                labels, centers = self.new_kmeans_gpu_3cluster(B_slice, lf_dim, self.n_worker)
                 V_cur[:, t] = labels
                 clusters[:, :, t] = centers
     

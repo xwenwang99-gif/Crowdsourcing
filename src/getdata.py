@@ -1,4 +1,16 @@
 # -*- coding: utf-8 -*-
+"""
+Refactored data generator for the latent-factor crowdsourcing model.
+
+Key change: `noise_ratio` (float in [0, 1)) replaces the hard-coded
+`noise_group` switch.  Within each task group g, a fraction `noise_ratio`
+of workers are *low-quality* (uniform random latent factors) and the
+remaining fraction `1 - noise_ratio` are *high-quality* (concentrated
+around the correct label direction for group g).
+
+Any number of task/label classes (n_classes) is supported, though the
+simulation below defaults to 5 to match the original experiments.
+"""
 
 import numpy as np
 
@@ -10,151 +22,127 @@ def getdata(
     k: float = 3.0,
     sigma: float = 1.0,
     obs_prob: float = 1.0,
-    noise_proportion: float = 0.0,
+    noise_ratio: float = 0.0,   # fraction of low-quality workers per group
+    n_classes: int = 5,         # number of label classes / latent dimensions
+    seed: int = None,
 ):
     """
-    Generate synthetic crowdsourcing data with latent task/worker factors.
-
-    The number of label classes, latent dimension, task groups, and HQ worker
-    groups all equal n_task_groups, making the setup fully flexible.
-
     Parameters
     ----------
-    n_task : int
-        Total number of tasks. Must be divisible by n_task_groups.
-    n_worker : int
-        Total number of workers.
-    n_task_groups : int
-        Number of task groups, label classes, and HQ worker groups.
-        Also sets the latent factor dimension. Can be any integer >= 2.
-    k : float
-        Signal strength for latent factors. Higher = more separated groups.
-    sigma : float
-        Noise std on latent factor draws. Higher = more overlap between groups.
-    obs_prob : float
-        Fraction of workers that label each task. 1.0 = fully observed.
-    noise_proportion : float
-        Fraction of workers that are pure noise (not HQ for any task group).
-        Must be in [0, 1). The remaining workers are split equally across the
-        n_task_groups HQ groups.
-
-    Returns
-    -------
-    rating : np.ndarray, shape (n_obs, 3)
-        Observed ratings as rows of [task_id, worker_id, label].
-    label : np.ndarray, shape (n_task,)
-        True task group labels (0 to n_task_groups - 1).
-    worker_label : np.ndarray, shape (n_worker, n_task_groups)
-        Binary indicator: worker_label[j, g] = 1 iff worker j is HQ for
-        task group g. Noise workers are all-zero rows.
-    R_obs : np.ndarray, shape (n_task, n_worker)
-        Observed rating matrix; np.nan where unobserved.
+    n_task        : total number of tasks (must be divisible by n_task_groups)
+    n_worker      : total number of workers (must be divisible by n_task_groups)
+    n_task_groups : number of task groups (= number of distinct true labels)
+    k             : signal strength for high-quality workers / task centroids
+    sigma         : noise std for the multivariate-normal draws
+    obs_prob      : probability that a worker observes a given task
+    noise_ratio   : fraction of workers that are low-quality in each group.
+                    0.0 → all workers are high-quality (original noise_group=0
+                    setting with 1/n_task_groups high-quality ratio).
+                    Increasing noise_ratio raises the proportion of random
+                    (low-quality) workers.  Must be in [0, 1).
+    n_classes     : dimensionality of the latent factor space (= number of
+                    label classes)
+    seed          : optional random seed for reproducibility
     """
-    # ------------------------------------------------------------------
-    # Validation
-    # ------------------------------------------------------------------
-    assert n_task_groups >= 2, "n_task_groups must be at least 2"
-    assert n_task % n_task_groups == 0, (
-        f"n_task ({n_task}) must be divisible by n_task_groups ({n_task_groups})"
-    )
-    assert 0.0 <= noise_proportion < 1.0, "noise_proportion must be in [0, 1)"
-    assert 0.0 < obs_prob <= 1.0, "obs_prob must be in (0, 1]"
+    if seed is not None:
+        np.random.seed(seed)
 
-    # n_dim drives the latent space; it equals n_task_groups so each group
-    # has its own dedicated latent dimension
-    n_dim = n_task_groups
-    n_classes = n_task_groups   # label classes equal task groups
+    assert 0.0 <= noise_ratio < 1.0, "noise_ratio must be in [0, 1)"
+    assert n_task % n_task_groups == 0, "n_task must be divisible by n_task_groups"
+    assert n_worker % n_task_groups == 0, "n_worker must be divisible by n_task_groups"
 
-    # ------------------------------------------------------------------
-    # 1. Worker group sizes
-    #
-    # Layout (by worker index):
-    #   [0 .. hq_size)              -> HQ group 0  (expert on task group 0)
-    #   [hq_size .. 2*hq_size)      -> HQ group 1
-    #   ...
-    #   [n_hq .. n_worker)          -> noise workers
-    #
-    # Any remainder from integer division is absorbed into noise so that
-    # all HQ groups are exactly the same size.
-    # ------------------------------------------------------------------
-    n_noise = int(round(n_worker * noise_proportion))
-    n_hq = n_worker - n_noise
-    hq_group_size = n_hq // n_task_groups       # floor division
-    n_noise += n_hq - hq_group_size * n_task_groups   # absorb remainder
-    n_hq = hq_group_size * n_task_groups
-
-    assert hq_group_size >= 1, (
-        f"HQ group size is 0. Increase n_worker or decrease noise_proportion. "
-        f"Need n_worker * (1 - noise_proportion) >= n_task_groups ({n_task_groups})."
-    )
-
-    # ------------------------------------------------------------------
-    # 2. Task latent factors  A  (n_task x n_dim)
-    #
-    #    Task group g is drawn from a Gaussian with mean k*e_g,
-    #    where e_g is the g-th standard basis vector.
-    #    This places each group along its own axis in latent space.
-    # ------------------------------------------------------------------
     tasks_per_group = n_task // n_task_groups
-    A = np.zeros((n_task, n_dim))
-
-    for g in range(n_task_groups):
-        mean = np.zeros(n_dim)
-        mean[g] = k
-        sl = slice(g * tasks_per_group, (g + 1) * tasks_per_group)
-        A[sl] = np.random.multivariate_normal(mean, sigma * np.eye(n_dim), tasks_per_group)
 
     # ------------------------------------------------------------------
-    # 3. Worker latent factors  B  (n_classes x n_worker x n_dim)
-    #
-    #    B[c, j, :] is worker j's factor vector for label class c.
-    #    The inner product A[i] @ B[c, j] gives the logit that worker j
-    #    assigns label c to task i.
-    #
-    #    HQ group g:
-    #      - For class c == g: mean = k * e_g  (strong correct signal)
-    #      - For class c != g: mean = 0        (neutral on off-classes)
-    #
-    #    Noise workers: uniform in [-k, k] for all classes -> random labels
+    # 1. Task latent factors A  (n_task × n_classes)
+    #    Group g is concentrated around the g-th standard basis vector * k.
     # ------------------------------------------------------------------
-    B = np.zeros((n_classes, n_worker, n_dim))
+    A = np.zeros((n_task, n_classes))
+    for g in range(n_task_groups):
+        centroid = np.zeros(n_classes)
+        centroid[g % n_classes] = k          # wrap if n_task_groups > n_classes
+        start = g * tasks_per_group
+        end   = start + tasks_per_group
+        A[start:end] = np.random.multivariate_normal(
+            centroid, sigma * np.eye(n_classes), tasks_per_group
+        )
+
+    # ------------------------------------------------------------------
+    # 2. Worker latent factors B_g  (n_worker × n_classes) for each group g
+    #
+    #    Within group g the high-quality workers occupy a contiguous block
+    #    of size `n_hq` starting at index `g * workers_per_group`.
+    #    All other workers are low-quality (uniform random in [-k, k]).
+    #
+    #    The `noise_ratio` parameter controls what fraction of the
+    #    n_worker // n_task_groups "slots" are high-quality:
+    #        n_hq = round((1 - noise_ratio) * workers_per_group)
+    #    so noise_ratio=0 gives the original 1/n_task_groups high-quality
+    #    fraction, and noise_ratio → 1 makes almost everyone low-quality.
+    # ------------------------------------------------------------------
+    workers_per_group = n_worker // n_task_groups
+    n_hq = max(1, round((1.0 - noise_ratio) * workers_per_group))
+
+    # B[g] is the latent factor matrix for group g
+    B = np.zeros((n_task_groups, n_worker, n_classes))
+
+    worker_label = np.zeros((n_worker, n_task_groups), dtype=int)
 
     for g in range(n_task_groups):
-        sl_w = slice(g * hq_group_size, (g + 1) * hq_group_size)
-        for c in range(n_classes):
-            mean = np.zeros(n_dim)
-            if c == g:
-                mean[g] = k
-            B[c, sl_w] = np.random.multivariate_normal(
-                mean, sigma * np.eye(n_dim), hq_group_size
+        hq_start = g * workers_per_group          # start of high-quality block
+        hq_end   = hq_start + n_hq               # end   of high-quality block
+
+        centroid = np.zeros(n_classes)
+        centroid[g % n_classes] = k
+
+        # high-quality block: concentrated around the correct direction
+        B[g, hq_start:hq_end] = np.random.multivariate_normal(
+            centroid, sigma * np.eye(n_classes), n_hq
+        )
+
+        # everyone else: low-quality (uniform random)
+        lq_indices = list(range(0, hq_start)) + list(range(hq_end, n_worker))
+        if lq_indices:
+            B[g, lq_indices] = (
+                np.random.random((len(lq_indices), n_classes)) * 2 * k - k
             )
 
-    if n_noise > 0:
+        # record which workers are high-quality for this group
+        worker_label[hq_start:hq_end, g] = 1
+
+    # ------------------------------------------------------------------
+    # 3. Compute response logits and sample labels
+    #    R_tsr[i, j, c] = A[i] · B[g][j]  for each class-response c
+    #    (here c indexes label classes, not task groups)
+    # ------------------------------------------------------------------
+    # R_tsr shape: (n_task, n_worker, n_classes)
+    R_tsr = np.zeros((n_task, n_worker, n_classes))
+    for g in range(n_task_groups):
+        start = g * tasks_per_group
+        end   = start + tasks_per_group
+        # A[start:end] @ B[g].T  → (tasks_per_group, n_worker)
+        scores = A[start:end].dot(B[g].T)          # (tasks_per_group, n_worker)
         for c in range(n_classes):
-            B[c, n_hq:] = np.random.uniform(-k, k, size=(n_noise, n_dim))
+            R_tsr[start:end, :, c] = scores        # same score vector per class
+
+        # More faithful to original: use B[g] per-group score for that group
+        # The original code indexed R_tsr[:, :, g] = A @ B_g.T which assigns
+        # the g-th worker factor score to the g-th *class* slot.  We replicate
+        # that exact logic here for full backwards compatibility:
+        R_tsr[:, :, g] = A.dot(B[g].T)
+
+    # Softmax over label classes to get probabilities
+    exp_logits = np.exp(R_tsr)
+    probs = exp_logits / exp_logits.sum(axis=2, keepdims=True)   # (n_task, n_worker, n_classes)
+
+    # Sample observed labels
+    R = np.array([
+        [np.random.choice(n_classes, p=probs[i, j]) for j in range(n_worker)]
+        for i in range(n_task)
+    ])
 
     # ------------------------------------------------------------------
-    # 4. Logits and softmax probabilities
-    #
-    #    logit[i, j, c] = A[i] . B[c, j]
-    #    prob[i, j, c]  = softmax over c
-    # ------------------------------------------------------------------
-    logits = np.einsum("id,cjd->ijc", A, B)      # (n_task, n_worker, n_classes)
-
-    logits -= logits.max(axis=2, keepdims=True)   # numerical stability
-    exp_logits = np.exp(logits)
-    probs = exp_logits / exp_logits.sum(axis=2, keepdims=True)
-
-    # ------------------------------------------------------------------
-    # 5. Sample labels - vectorised inverse-CDF multinomial
-    # ------------------------------------------------------------------
-    probs_flat = probs.reshape(-1, n_classes)               # (n_task*n_worker, n_classes)
-    u = np.random.uniform(size=(probs_flat.shape[0], 1))
-    R_full = (u < probs_flat.cumsum(axis=1)).argmax(axis=1) \
-               .reshape(n_task, n_worker)                   # (n_task, n_worker)
-
-    # ------------------------------------------------------------------
-    # 6. Observation mask (obs_prob)
+    # 4. Subsample observations according to obs_prob
     # ------------------------------------------------------------------
     records = []
     for i in range(n_task):
@@ -162,25 +150,49 @@ def getdata(
         sub_workers = np.sort(
             np.random.choice(n_worker, size=sub_n, replace=False)
         )
-        records.append(np.column_stack([
+        tmp = np.column_stack([
             np.full(sub_n, i),
             sub_workers,
-            R_full[i, sub_workers],
-        ]))
+            R[i, sub_workers],
+        ])
+        records.append(tmp)
 
-    rating = np.concatenate(records, axis=0).astype(int)
+    rating = np.concatenate(records, axis=0)
 
     R_obs = np.full((n_task, n_worker), np.nan)
-    R_obs[rating[:, 0], rating[:, 1]] = rating[:, 2]
+    task_ids   = rating[:, 0].astype(int)
+    worker_ids = rating[:, 1].astype(int)
+    labels_obs = rating[:, 2].astype(int)
+    R_obs[task_ids, worker_ids] = labels_obs
 
-    # ------------------------------------------------------------------
-    # 7. Ground-truth labels and worker quality indicators
-    # ------------------------------------------------------------------
+    # Ground-truth task labels (0-indexed group membership)
     label = np.repeat(np.arange(n_task_groups), tasks_per_group)
 
-    worker_label = np.zeros((n_worker, n_task_groups), dtype=int)
-    for g in range(n_task_groups):
-        sl_w = slice(g * hq_group_size, (g + 1) * hq_group_size)
-        worker_label[sl_w, g] = 1
+    # B reshaped to (n_worker, n_task_groups, n_classes) for downstream use,
+    # transposed to match the original stacking convention: (n_worker, n_task_groups, n_classes)
+    B_out = B.transpose(1, 0, 2)   # (n_worker, n_task_groups, n_classes)
 
-    return rating, label, worker_label, R_obs
+    return rating, label, worker_label, R_obs, A, B_out
+
+
+# -----------------------------------------------------------------------
+# Quick smoke test
+# -----------------------------------------------------------------------
+if __name__ == "__main__":
+    for noise in [0.0, 2/7, 0.5]:
+        rating, label, wl, R_obs, A, B = getdata(
+            n_task=500,
+            n_worker=100,
+            n_task_groups=5,
+            k=3.0,
+            sigma=1.0,
+            obs_prob=1.0,
+            noise_ratio=noise,
+            seed=42,
+        )
+        hq_counts = wl.sum(axis=0)
+        print(
+            f"noise_ratio={noise:.3f} | "
+            f"rating shape={rating.shape} | "
+            f"high-quality workers per group: {hq_counts}"
+        )

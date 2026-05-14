@@ -91,17 +91,17 @@ def _hq_and_label_infer(pred_group,
             
             abs_vals = np.abs(leading)
         
-    
-        plt.figure(figsize=(6, 4))
-        plt.hist(scores, bins=40, density=True, alpha=0.8, edgecolor="black")
-        plt.axvline(np.partition(scores, -m)[-m], color="red", linestyle="--",
-                    label=f"Top-{m} cutoff")
-        plt.title(f"Task Group {g}: |Leading Eigenvector|_2 Distribution")
-        plt.xlabel("|v_i|")
-        plt.ylabel("Density")
-        plt.legend()
-        plt.tight_layout()
-        plt.show()
+        if verbose:
+            plt.figure(figsize=(6, 4))
+            plt.hist(scores, bins=40, density=True, alpha=0.8, edgecolor="black")
+            plt.axvline(np.partition(scores, -m)[-m], color="red", linestyle="--",
+                        label=f"Top-{m} cutoff")
+            plt.title(f"Task Group {g}: |Leading Eigenvector|_2 Distribution")
+            plt.xlabel("|v_i|")
+            plt.ylabel("Density")
+            plt.legend()
+            plt.tight_layout()
+            plt.show()
         
         
         if verbose:
@@ -217,7 +217,7 @@ def _hq_and_label_infer(pred_group,
         all_pred_hq = set()
         
         for h in range(n_task_groups):
-            true_hq_set = set(np.where(worker_label[:, h] == 1)[0])   # true HQ workers for true group h
+            true_hq_set = set(np.where(worker_label[:, h, 0] == 1)[0])   # true HQ workers for true group h
             pred_hq_set = pred_hq_by_true_group[h]                    # predicted HQ workers for true group h
         
             all_true_hq |= true_hq_set
@@ -258,12 +258,9 @@ def _hq_and_label_infer(pred_group,
         #  - true:  1 if worker is true HQ for that group
         #  - pred:  1 if worker is predicted HQ for that true group (via MV mapping above)
         
-        true_hq_matrix = worker_label.T      # shape (n_groups, n_worker)
         
-        pred_hq_matrix = np.zeros((n_task_groups, n_worker))
-        for h in range(n_task_groups):
-            for w in pred_hq_by_true_group[h]:
-                pred_hq_matrix[h, w] = 1.0
+        #true_hq_matrix = worker_label.T      # shape (n_groups, n_worker)      
+        true_hq_matrix = worker_label[:, :, 0].T   # (n_task_groups, n_worker), HQ only
         
         plt.figure(figsize=(10, 4))
         plt.subplot(1, 2, 1)
@@ -272,12 +269,36 @@ def _hq_and_label_infer(pred_group,
         plt.xlabel("Worker")
         plt.ylabel("True group")
         
-        plt.subplot(1, 2, 2)
-        sns.heatmap(pred_hq_matrix, cmap="viridis")
-        plt.title("Predicted HQ workers\n(rows=true groups, cols=workers)")
-        plt.xlabel("Worker")
-        plt.ylabel("True group")
         
+        #########################################
+        # 4. Heatmaps of worker agreement per task group
+        #########################################
+        fig, axes = plt.subplots(1, n_task_groups, figsize=(5 * n_task_groups, 5))
+        if n_task_groups == 1:
+            axes = [axes]
+        
+        for g in range(n_task_groups):
+            tasks_g = np.where(label == g)[0]
+            if len(tasks_g) == 0:
+                continue
+        
+            R_g = R_obs[tasks_g, :]
+            agreement_g = np.zeros((n_worker, n_worker))
+            for w1 in range(n_worker):
+                for w2 in range(n_worker):
+                    valid = ~np.isnan(R_g[:, w1]) & ~np.isnan(R_g[:, w2])
+                    if valid.sum() == 0:
+                        agreement_g[w1, w2] = 0
+                    else:
+                        agreement_g[w1, w2] = np.mean(R_g[valid, w1] == R_g[valid, w2])
+        
+            sns.heatmap(agreement_g, cmap="viridis", vmin=0, vmax=1,
+                        ax=axes[g], xticklabels=False, yticklabels=False)
+            axes[g].set_title(f"Task group {g}\n({len(tasks_g)} tasks)")
+            axes[g].set_xlabel("Worker")
+            axes[g].set_ylabel("Worker")
+        
+        plt.suptitle("Worker agreement matrices by predicted task group", y=1.02)
         plt.tight_layout()
         plt.show()
     

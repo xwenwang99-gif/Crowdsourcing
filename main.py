@@ -14,10 +14,11 @@ Created on Mon Nov 25 17:19:04 2024
 @author: wangl
 """
 
-from src.lfgp_withoutO import LFGP
+from src.lfgp_withoutO_biased import LFGP
 from src.GTIC import gtic
 from src.multispa import multispa_fit_predict
 from src.getdata import getdata
+from src.getdata_biased import getdata_biased
 from src.eigenInfer import _hq_and_label_infer
 from src.peera import peerA
 import numpy as np
@@ -36,8 +37,8 @@ warnings.filterwarnings('ignore')
 
 n_task=200
 n_worker=200
-n_task_groups=10
-n_worker_groups=20
+n_task_groups=5
+n_worker_groups=10    #used for m = n_worker // n_worker_groups for number of hq workers
 task_accuracy=[]
 task_accuracy_ds=[]
 task_accuracy_MV= []
@@ -50,28 +51,49 @@ acc_k = []
 l=[]
 
 eigen_ex= 1
-DS_ex = 0
+DS_ex = 1
 MV_HQ_ex= 0
 MV_ex = 0
 GTIC_ex = 0
 Multispa_ex = 0
 GLAD_ex = 0
+'''
+ratios = [1/2, 1/3, 1/4]
+combinations = [
+    (hq, bias)
+    for hq, bias in itertools.product(ratios, ratios)
+]
 
-
-
-for i in range(5):
+for hq_ratio, bias_ratio in combinations:
+    print(f"\n=== hq_ratio={hq_ratio:.3f}, bias_ratio={bias_ratio:.3f} ===")
+'''
+for i in range(2):
     
-    ##rating, label = getdata1(scenario="hetero", seed=seed)
-    ##getdata1
-    np.random.seed(i)
-    
-    rating, label, worker_label, R_obs = getdata(n_task, 
-    n_worker,
-    n_task_groups,   
-    k=2,
-    sigma= 1.0,
-    obs_prob=0.3,
-    noise_proportion= 0.5)
+    #np.random.seed(i)
+    '''
+    rating, label, worker_label, R_obs, task_lf, worker_lf = getdata( n_task = n_task,
+     n_worker = n_worker,
+     n_task_groups = n_task_groups,  
+     k = 5,
+     sigma = 0.1,
+     obs_prob=0.3,
+     noise_ratio = 0.95,   # fraction of low-quality workers per group
+     n_classes = n_task_groups)
+    '''
+
+
+    rating, label, worker_label, R_obs, task_lf, worker_lf = getdata_biased(
+        n_task = n_task,
+        n_worker = n_worker,
+        n_task_groups = n_task_groups,
+        k = 3,
+        sigma = 1.0,
+        obs_prob = 0.3,
+        hq_ratio = 1/4,
+        bias_ratio = 1/2,
+        delta = 1,
+        n_classes = 5
+    )
 
 
     #All workers on one task group agreement
@@ -80,7 +102,7 @@ for i in range(5):
     # optional: collect metrics across k & groups
 
     if eigen_ex:
-        model = LFGP(lf_dim=10, n_worker_group=11, lambda1 = 1, lambda2_0 = 1, lambda2_1 = 2)
+        model = LFGP(lf_dim=n_task_groups, n_worker_group=n_task_groups, lambda1 = 1, lambda2_0 = 1, lambda2_1 = 2)
         model._prescreen(rating)
         
         _, task_id = np.unique(rating[:, 0], return_inverse=True)
@@ -88,7 +110,7 @@ for i in range(5):
         
     
         
-        A, B, U, V, _ = model._mc_fit(rating, key = label, epsilon=1e-5, maxiter=maxiter, verbose=0)
+        A, B, U, V, _ = model._mc_fit(rating, key = label, scheme="ds", epsilon=1e-5, maxiter=maxiter, verbose=0, A = task_lf, B = worker_lf)
         ###############################################
         # After LFGP fit: U is length n_task
         ###############################################
@@ -96,6 +118,9 @@ for i in range(5):
         # Ensure U is integer group labels for tasks
         
         pred_group = U.astype(int) 
+        task_labeling_acc = model.task_acc(rating, label)
+        print("==== TASK GROUPING ACCURACY ====")
+        print(task_labeling_acc)
         
         temp_taskAccuracy, task_label_pred, hq_workers_pred = _hq_and_label_infer(pred_group, 
                                 R_obs,
@@ -107,7 +132,7 @@ for i in range(5):
                                 n_worker_groups,
                                 USE_TOP2_EIGEN = True,
                                 LABEL_MODE = 'group',
-                                verbose = False
+                                verbose = True
                                 )
         '''
         U_mv_by_task = model._mc_infer_by_task(rating)
