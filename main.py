@@ -122,7 +122,7 @@ for i in range(2):
         print("==== TASK GROUPING ACCURACY ====")
         print(task_labeling_acc)
         
-        temp_taskAccuracy, task_label_pred, hq_workers_pred = _hq_and_label_infer(pred_group, 
+        temp_taskAccuracy, task_label_pred, hq_workers_pred, biased_workers_pred = _hq_and_label_infer(pred_group, 
                                 R_obs,
                                 label,
                                 worker_label,
