@@ -52,7 +52,7 @@ rating      : (N_obs, 3) int array   — [task_id, worker_id, label]
 label       : (n_task,) int array    — ground-truth task labels (0-indexed)
 worker_type : (n_worker, n_task_groups, 3) int array
               worker_type[j, g, t]=1 iff worker j is archetype t for group g
-              t=0: HQ,  t=1: biased,  t=2: LQ
+              t=0: LQ, t=1: HQ,  t=2: biased  
 R_obs       : (n_task, n_worker) float array — labels (NaN=unobserved)
 A           : (n_task, n_classes) float array  — task latent factors
 B           : (n_worker, n_task_groups, n_classes) float array
@@ -135,7 +135,7 @@ def getdata_biased(
     # ------------------------------------------------------------------ #
     B = np.random.random((n_task_groups, n_worker, n_classes)) * 2 * k - k
 
-    worker_type_idx = np.full((n_worker, n_task_groups), 2, dtype=int)  # default LQ
+    worker_type_idx = np.full((n_worker, n_task_groups), 0, dtype=int)  # default LQ
 
     for g in range(n_task_groups):
         ws = g * workers_per_group   # block start
@@ -161,7 +161,7 @@ def getdata_biased(
         B[g, hq_start:hq_end] = np.random.multivariate_normal(
             task_centroid, sigma * np.eye(n_classes), n_hq
         )
-        worker_type_idx[hq_start:hq_end, g] = 0
+        worker_type_idx[hq_start:hq_end, g] = 1
 
         # Biased:
         #   correct slot B[g][j] ≈ 0  (near-zero so logit(c=g) ≈ 0)
@@ -170,9 +170,9 @@ def getdata_biased(
         )
         #   wrong slot B[g_wrong][j] ≈ k*e_g  (so logit(c=g_wrong) ≈ k²)
         B[g_wrong, bias_start:bias_end] = np.random.multivariate_normal(
-            task_centroid, (sigma+1) * np.eye(n_classes), n_bias
+            task_centroid/2, (sigma) * np.eye(n_classes), n_bias
         )
-        worker_type_idx[bias_start:bias_end, g] = 1
+        worker_type_idx[bias_start:bias_end, g] = 2
 
         # LQ: already random from initialisation, no overwrite needed
 

@@ -72,13 +72,14 @@ def _hq_and_label_infer(pred_group,
         
         scores_reshaped = scores.reshape(-1, 1)  # (n_worker, 1)
 
+        # Replace 1D score clustering with 2D eigenvector clustering
         km = KMeans(n_clusters=3, n_init=10)
-        labels_np = km.fit_predict(scores_reshaped)
-        centers_np = km.cluster_centers_.flatten()  # (3,)
+        labels_np = km.fit_predict(V2)  # (n_worker, 2) instead of (n_worker, 1)
+        centers_np = km.cluster_centers_  # (3, 2)
 
-        # Identify which cluster label corresponds to which archetype
-        # by sorting cluster centers: smallest=LQ, largest=HQ, middle=biased
-        order = np.argsort(centers_np)  # order[0]=LQ, order[1]=biased, order[2]=HQ
+        # Identify archetypes by center norms
+        center_norms = np.linalg.norm(centers_np, axis=1)  # (3,)
+        order = np.argsort(center_norms)  # smallest=LQ, then biased, then HQ
 
         lq_label     = order[0]
         biased_label = order[1]
@@ -88,8 +89,8 @@ def _hq_and_label_infer(pred_group,
         biased_workers_g = np.where(labels_np == biased_label)[0]
         lq_workers_g     = np.where(labels_np == lq_label)[0]
 
-        hq_workers_pred[g]      = hq_workers_g
-        biased_workers_pred[g]  = biased_workers_g
+        hq_workers_pred[g]     = hq_workers_g
+        biased_workers_pred[g] = biased_workers_g
             
         if LABEL_MODE == 'group':
         
@@ -122,8 +123,7 @@ def _hq_and_label_infer(pred_group,
             mv_label = int(mv)
             group_label_pred[g] = mv_label
             
-            if verbose:        
-                print(f"Pred group {g}: HQ-voted label = {mv_label}")
+
             
             task_label_pred = np.zeros(n_task, dtype=int)
             for g in range(n_task_groups):
@@ -179,6 +179,25 @@ def _hq_and_label_infer(pred_group,
     # 3. Worker identification accuracy
     #########################################
     if verbose:
+        print("\n==== HQ VOTED LABEL vs TRUE LABEL PER PREDICTED GROUP ====")
+        print(f"  {'True group':<12} {'HQ voted label':<16} {'Match':<8}")
+        print("-" * 40)
+        
+        for g in range(n_task_groups):
+            tasks_g = np.where(pred_group == g)[0]
+            if len(tasks_g) == 0:
+                print(f"  {'N/A':<12} {'N/A':<16} {'N/A':<8}")
+                continue
+            
+            # True group for predicted group g via majority of ground truth labels
+            true_labels_g = label[tasks_g]
+            true_g = int(mode(true_labels_g, axis=None).mode)
+            
+            # HQ voted label for predicted group g
+            hq_voted = group_label_pred[g]
+            
+            match = "✓" if hq_voted == true_g else "✗"
+            print(f"  {true_g:<12} {hq_voted:<16} {match:<8}")
         archetype_names = ['LQ', 'HQ', 'Biased']
 
         # Build true V from worker_type (n_worker, n_task_groups, 3)
@@ -187,12 +206,25 @@ def _hq_and_label_infer(pred_group,
 
         # Build predicted V from hq_workers_pred and biased_workers_pred
         # 0=LQ (default), 1=HQ, 2=biased
-        V_pred = np.zeros((n_worker, n_task_groups), dtype=int)
+        # Build V_pred aligned to true task groups
+        # using ground truth task labels to identify which true group
+        # each predicted group corresponds to
+        V_pred_aligned = np.zeros((n_worker, n_task_groups), dtype=int)
+
         for g in range(n_task_groups):
+            tasks_g = np.where(pred_group == g)[0]
+            if len(tasks_g) == 0:
+                continue
+            
+            # Find the majority true label among tasks in predicted group g
+            true_labels_g = label[tasks_g]
+            true_g = mode(true_labels_g, axis=None).mode
+            true_g = int(true_g)
+            
             if hq_workers_pred[g] is not None:
-                V_pred[hq_workers_pred[g], g] = 1
+                V_pred_aligned[hq_workers_pred[g], true_g] = 1
             if biased_workers_pred[g] is not None:
-                V_pred[biased_workers_pred[g], g] = 2
+                V_pred_aligned[biased_workers_pred[g], true_g] = 2
 
         overall_true = []
         overall_pred = []
@@ -206,7 +238,7 @@ def _hq_and_label_infer(pred_group,
 
         for g in range(n_task_groups):
             y_true = V_true[:, g]
-            y_pred = V_pred[:, g]
+            y_pred = V_pred_aligned[:, g]
 
             overall_true.extend(y_true)
             overall_pred.extend(y_pred)
@@ -239,7 +271,8 @@ def _hq_and_label_infer(pred_group,
 
         plt.suptitle("Worker identification confusion matrices", y=1.02)
         plt.tight_layout()
-        plt.show()
+        #plt.show()
+        plt.savefig("graph/graph1.png")
 
         # ── Overall pooled confusion matrix ──
         overall_true = np.array(overall_true)
@@ -260,7 +293,8 @@ def _hq_and_label_infer(pred_group,
         ax2.set_xlabel('Predicted')
         ax2.set_ylabel('True')
         plt.tight_layout()
-        plt.show()
+        #plt.show()
+        plt.savefig("graph/graph2.png")
 
         print("\n==== OVERALL POOLED METRICS ====")
         print(f"  {'Archetype':<10} {'Precision':<12} {'Recall':<10} {'F1':<8}")
@@ -317,6 +351,7 @@ def _hq_and_label_infer(pred_group,
         
         plt.suptitle("Worker agreement matrices by predicted task group", y=1.02)
         plt.tight_layout()
-        plt.show()
+        #plt.show()
+        plt.savefig("graph/graph3.png")
     
     return task_accuracy, task_label_pred, hq_workers_pred, biased_workers_pred

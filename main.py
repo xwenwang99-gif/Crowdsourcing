@@ -67,18 +67,18 @@ combinations = [
 for hq_ratio, bias_ratio in combinations:
     print(f"\n=== hq_ratio={hq_ratio:.3f}, bias_ratio={bias_ratio:.3f} ===")
 '''
-for i in range(2):
+for i in range(5):
     
-    #np.random.seed(i)
+    np.random.seed(i)
     '''
     rating, label, worker_label, R_obs, task_lf, worker_lf = getdata( n_task = n_task,
-     n_worker = n_worker,
-     n_task_groups = n_task_groups,  
-     k = 5,
-     sigma = 0.1,
-     obs_prob=0.3,
-     noise_ratio = 0.95,   # fraction of low-quality workers per group
-     n_classes = n_task_groups)
+    n_worker = n_worker,
+    n_task_groups = n_task_groups,  
+    k = 5,
+    sigma = 0.1,
+    obs_prob=0.3,
+    noise_ratio = 0.95,   # fraction of low-quality workers per group
+    n_classes = n_task_groups)
     '''
 
 
@@ -88,9 +88,9 @@ for i in range(2):
         n_task_groups = n_task_groups,
         k = 3,
         sigma = 1.0,
-        obs_prob = 0.3,
-        hq_ratio = 1/4,
-        bias_ratio = 1/2,
+        obs_prob = 1,
+        hq_ratio = 1/2,
+        bias_ratio = 1/3,  
         delta = 1,
         n_classes = 5
     )
@@ -118,9 +118,9 @@ for i in range(2):
         # Ensure U is integer group labels for tasks
         
         pred_group = U.astype(int) 
-        task_labeling_acc = model.task_acc(rating, label)
-        print("==== TASK GROUPING ACCURACY ====")
-        print(task_labeling_acc)
+        task_labeling_acc = model.task_acc(pred_group, label)
+        #print("==== TASK GROUPING ACCURACY ====")
+        #print(task_labeling_acc)
         
         temp_taskAccuracy, task_label_pred, hq_workers_pred, biased_workers_pred = _hq_and_label_infer(pred_group, 
                                 R_obs,
@@ -132,7 +132,7 @@ for i in range(2):
                                 n_worker_groups,
                                 USE_TOP2_EIGEN = True,
                                 LABEL_MODE = 'group',
-                                verbose = True
+                                verbose = 1
                                 )
         '''
         U_mv_by_task = model._mc_infer_by_task(rating)
@@ -182,13 +182,14 @@ for i in range(2):
     if GTIC_ex:    
         res_gtic = gtic(rating, n=n_task, m=n_worker, K=n_task_groups, missing_val=-1)
         task_accuracy_gtic.append(np.mean(res_gtic.y_hat == label))
-    
-    
+
+print("task_accuracy list before mean:", task_accuracy)
+
 if eigen_ex:
     task_accuracy_mean = np.mean(task_accuracy)
     task_accuracy_sd = np.std(task_accuracy)
     results = {
-        "Eigen_L2 without eign": {
+        "Eigen_L2": {
             "mean": task_accuracy_mean,
             "sd": task_accuracy_sd
         }}
