@@ -1,270 +1,212 @@
 # -*- coding: utf-8 -*-
 """
-Created on Fri Nov 28 13:42:41 2025
+main.py  -- crowdsourcing experiment driver.
 
-@author: wangl
+Cleanups vs. the previous version:
+  * every per-method accuracy/F1/bal-acc list is replaced by a single nested
+    `metrics` dict:  metrics[method][metric] -> list over runs.
+  * each method only has to produce a predicted-label vector `y_pred`; a shared
+    `evaluate()` computes accuracy / macro-F1 / balanced-acc the same way for all.
+  * `y_true` / `y_pred` naming throughout for ground-truth and predicted labels.
+  * results are written to disk (results/run_<timestamp>/) after every run, so an
+    idle timeout cannot lose completed runs.  Remember to `git add results && push`
+    to keep them if the whole Codespace is later deleted.
 """
 
-# %%
-# -*- coding: utf-8 -*-
+import os
+import json
+import time
+import warnings
 
-"""
-Created on Mon Nov 25 17:19:04 2024
-
-@author: wangl
-"""
+import numpy as np
+import pandas as pd
+from scipy.stats import mode
+from sklearn.metrics import balanced_accuracy_score
 
 from src.lfgp_withoutO_biased import LFGP
 from src.GTIC import gtic
 from src.multispa import multispa_fit_predict
-from src.getdata import getdata
 from src.getdata_biased import getdata_biased
 from src.eigenInfer import _hq_and_label_infer
+from src.Diagnosis import diagnose, summarize_runs
 from src.peera import peerA
-import numpy as np
-import warnings
-import numpy_indexed as npi
-import matplotlib.pyplot as plt
-import pandas as pd
-from scipy.stats import mode
-import seaborn as sns
-import itertools
-import numpy as np
-import time
+
+warnings.filterwarnings("ignore")
+
+# --------------------------------------------------------------------------- #
+#  configuration
+# --------------------------------------------------------------------------- #
+N_RUNS        = 1
+MAXITER       = 100
+N_TASK        = 1000
+N_WORKER      = 1000
+N_TASK_GROUPS = 5
+N_WORKER_GROUPS = 10
+
+# which methods to run (replaces the eigen_ex / DS_ex / ... flags)
+ENABLE = {
+    "Eigen_L2": True,
+    "DS":       True,
+    "MV_HQ":    1,
+    "MV":       1,
+    "GLAD":     1,
+    "MultiSPA": 1,
+    "GTIC":     1,
+}
+METHODS = [m for m in ENABLE if ENABLE[m]]
+
+DATA_KW = dict(                       # getdata_biased arguments, kept in one place
+    n_task=N_TASK, n_worker=N_WORKER, n_task_groups=N_TASK_GROUPS,
+    k=3, sigma=1.0, obs_prob=1, hq_ratio=1/3, bias_ratio=1/2,
+    delta=1, n_classes=N_TASK_GROUPS,
+)
+
+# --------------------------------------------------------------------------- #
+#  output directory (persists on disk across idle timeout)
+# --------------------------------------------------------------------------- #
+RUN_ID  = time.strftime("%Y%m%d_%H%M%S")
+OUT_DIR = os.path.join("results", f"run_{RUN_ID}")
+os.makedirs(OUT_DIR, exist_ok=True)
+
+
+def _to_native(o):
+    if isinstance(o, np.ndarray):
+        return o.tolist()
+    if isinstance(o, np.floating):
+        return float(o)
+    if isinstance(o, np.integer):
+        return int(o)
+    return str(o)
+
+
+def save_json(path, obj):
+    with open(path, "w") as f:
+        json.dump(obj, f, indent=2, default=_to_native)
+
+
+# --------------------------------------------------------------------------- #
+#  shared evaluation: every method just hands us a predicted-label vector
+# --------------------------------------------------------------------------- #
+def evaluate(y_true, y_pred, n_classes):
+    acc, macro_f1 = diagnose(y_true, y_pred, n_classes=n_classes)
+    bal = balanced_accuracy_score(y_true, y_pred)
+    return {"accuracy": acc, "macro_f1": macro_f1, "bal_acc": bal}
+
+
+def build_summary(metrics):
+    rows = {}
+    for name in METHODS:
+        if len(metrics[name]["accuracy"]) == 0:
+            continue
+        a = summarize_runs(metrics[name]["accuracy"])
+        f = summarize_runs(metrics[name]["macro_f1"])
+        b = summarize_runs(metrics[name]["bal_acc"])
+        rows[name] = {
+            "Accuracy":     a["mean"], "Acc sd": a["sd"],
+            "Acc CI":       [round(a["ci_low"], 4), round(a["ci_high"], 4)],
+            "Macro F1":     f["mean"], "F1 sd":  f["sd"],
+            "F1 CI":        [round(f["ci_low"], 4), round(f["ci_high"], 4)],
+            "Balanced Acc": b["mean"], "Bal sd": b["sd"],
+            "Bal CI":       [round(b["ci_low"], 4), round(b["ci_high"], 4)],
+            "n_runs":       a["n"],
+        }
+    return pd.DataFrame.from_dict(rows, orient="index")
+
+
+# --------------------------------------------------------------------------- #
+#  metric store:  metrics[method][metric] -> list over runs
+# --------------------------------------------------------------------------- #
+metrics = {m: {"accuracy": [], "macro_f1": [], "bal_acc": []} for m in METHODS}
 
 start = time.perf_counter()
-warnings.filterwarnings('ignore')
 
-n_task=200
-n_worker=200
-n_task_groups=5
-n_worker_groups=10    #used for m = n_worker // n_worker_groups for number of hq workers
-task_accuracy=[]
-task_accuracy_ds=[]
-task_accuracy_MV= []
-task_accuracy_MV_HQ = []
-task_accuracy_gtic = []
-task_accuracy_multispa = []
-task_accuracy_glad = []
-maxiter = 50
-acc_k = []
-l=[]
-
-eigen_ex= 1
-DS_ex = 1
-MV_HQ_ex= 0
-MV_ex = 0
-GTIC_ex = 0
-Multispa_ex = 0
-GLAD_ex = 0
-'''
-ratios = [1/2, 1/3, 1/4]
-combinations = [
-    (hq, bias)
-    for hq, bias in itertools.product(ratios, ratios)
-]
-
-for hq_ratio, bias_ratio in combinations:
-    print(f"\n=== hq_ratio={hq_ratio:.3f}, bias_ratio={bias_ratio:.3f} ===")
-'''
-for i in range(5):
-    
+for i in range(N_RUNS):
     np.random.seed(i)
-    '''
-    rating, label, worker_label, R_obs, task_lf, worker_lf = getdata( n_task = n_task,
-    n_worker = n_worker,
-    n_task_groups = n_task_groups,  
-    k = 5,
-    sigma = 0.1,
-    obs_prob=0.3,
-    noise_ratio = 0.95,   # fraction of low-quality workers per group
-    n_classes = n_task_groups)
-    '''
 
+    rating, y_true, worker_label, R_obs, task_lf, worker_lf = getdata_biased(**DATA_KW)
 
-    rating, label, worker_label, R_obs, task_lf, worker_lf = getdata_biased(
-        n_task = n_task,
-        n_worker = n_worker,
-        n_task_groups = n_task_groups,
-        k = 3,
-        sigma = 1.0,
-        obs_prob = 1,
-        hq_ratio = 1/2,
-        bias_ratio = 1/3,  
-        delta = 1,
-        n_classes = 5
-    )
+    produced = {}   # method name -> predicted label vector for this run
 
-
-    #All workers on one task group agreement
-    hq_workers_by_group = []  # will store inferred HQ workers for each group
-    results = []
-    # optional: collect metrics across k & groups
-
-    if eigen_ex:
-        model = LFGP(lf_dim=n_task_groups, n_worker_group=n_task_groups, lambda1 = 1, lambda2_0 = 1, lambda2_1 = 2)
+    # LFGP model is needed by both Eigen_L2 and DS
+    model = None
+    if ENABLE["Eigen_L2"] or ENABLE["DS"]:
+        model = LFGP(lf_dim=N_TASK_GROUPS, n_worker_group=N_TASK_GROUPS,
+                     lambda1=1, lambda2_0=1, lambda2_1=2)
         model._prescreen(rating)
-        
-        _, task_id = np.unique(rating[:, 0], return_inverse=True)
-        _, worker_id = np.unique(rating[:, 1], return_inverse=True)
-        
-    
-        
-        A, B, U, V, _ = model._mc_fit(rating, key = label, scheme="ds", epsilon=1e-5, maxiter=maxiter, verbose=0, A = task_lf, B = worker_lf)
-        ###############################################
-        # After LFGP fit: U is length n_task
-        ###############################################
-        
-        # Ensure U is integer group labels for tasks
-        
-        pred_group = U.astype(int) 
-        task_labeling_acc = model.task_acc(pred_group, label)
-        #print("==== TASK GROUPING ACCURACY ====")
-        #print(task_labeling_acc)
-        
-        temp_taskAccuracy, task_label_pred, hq_workers_pred, biased_workers_pred = _hq_and_label_infer(pred_group, 
-                                R_obs,
-                                label,
-                                worker_label,
-                                n_task, 
-                                n_worker,
-                                n_task_groups,
-                                n_worker_groups,
-                                USE_TOP2_EIGEN = True,
-                                LABEL_MODE = 'group',
-                                verbose = 1
-                                )
-        '''
-        U_mv_by_task = model._mc_infer_by_task(rating)
-        temp_taskAccuracy = np.mean(U_mv_by_task==label)
-        '''
-        task_accuracy.append(temp_taskAccuracy)
-    if DS_ex:
-        pred_label_ds = model._init_task_member_ds(rating)
-        task_accuracy_ds.append(np.mean(pred_label_ds[:, 1] == label))
-    if MV_HQ_ex:
-        #Data generation accuracy with hq workers
-        MV_HQ = np.zeros(n_task)
-        for t in range(n_task):
-            task_t = label[t]
-            hq_worker = np.where(worker_label[:, task_t] == 1)[0]        
-            task_data = rating[np.isin(rating[:, 1], hq_worker) & (rating[:, 0] == t)]
-            labels = task_data[:, 2]
-            if len(labels) == 0:
-                MV_HQ[t] = -1  # or np.nan, or whatever sentinel makes sense for your use case
-            else:
-                MV_HQ[t] = mode(labels, axis=None).mode.item()
-            
-        task_accuracy_MV_HQ.append(np.mean(MV_HQ == label))
-    if MV_ex:
-        #Data generation accuracy with all workers
-        
-        MV = np.zeros(n_task, dtype=int)
-    
-        for t in range(n_task):
-            task_data = rating[rating[:, 0] == t]
-            labels = task_data[:, 2]
-            if len(labels) == 0:
-                MV[t] = -1
-            else:
-                MV[t] = mode(labels, axis=None).mode.item()
-            
-        task_accuracy_MV.append(np.mean(MV == label))
-    if GLAD_ex:
-        peera = peerA(rating, n_task_groups, n_worker)
-        res_glad, _ = peera._GLAD()
-        task_accuracy_glad.append(np.mean(res_glad == label))
-        
-    if Multispa_ex:    
-        res_multispa = multispa_fit_predict(rating, K=n_task_groups, assume_triplets=True)
-        task_accuracy_multispa.append(np.mean(res_multispa.y_hat == label))
-        
-    if GTIC_ex:    
-        res_gtic = gtic(rating, n=n_task, m=n_worker, K=n_task_groups, missing_val=-1)
-        task_accuracy_gtic.append(np.mean(res_gtic.y_hat == label))
 
-print("task_accuracy list before mean:", task_accuracy)
+    if ENABLE["Eigen_L2"]:
+        A, B, U, V, clusters_np = model._mc_fit(
+            rating, key=y_true, scheme="ds", epsilon=1e-5,
+            maxiter=MAXITER, verbose=0, A=task_lf, B=worker_lf,
+        )
+        pred_group = U.astype(int)
+        _, y_pred, _, _ = _hq_and_label_infer(
+            pred_group, R_obs, y_true, worker_label,
+            N_TASK, N_WORKER, N_TASK_GROUPS,
+            n_worker_groups=None, LABEL_MODE="task", verbose=False,
+            B_PERM=2000, FDR_Q=0.10, MIN_COVERAGE=5,
+            RANDOM_STATE=None, return_spectral=False,
+        )
+        produced["Eigen_L2"] = y_pred
 
-if eigen_ex:
-    task_accuracy_mean = np.mean(task_accuracy)
-    task_accuracy_sd = np.std(task_accuracy)
-    results = {
-        "Eigen_L2": {
-            "mean": task_accuracy_mean,
-            "sd": task_accuracy_sd
-        }}
-    print(pd.DataFrame.from_dict(results, orient="index"))
-if DS_ex:
-    task_accuracy_mean_ds = np.mean(task_accuracy_ds)
-    task_accuracy_sd_ds = np.std(task_accuracy_ds)
-    results = {
-        "DS": {
-            "mean": task_accuracy_mean_ds,
-            "sd": task_accuracy_sd_ds
-        }}
-    print(pd.DataFrame.from_dict(results, orient="index"))
-if MV_HQ_ex:
-    task_accuracy_mean_MV_HQ = np.mean(task_accuracy_MV_HQ)
-    task_accuracy_sd_MV_HQ = np.std(task_accuracy_MV_HQ)
-    results = {
-        "MV_HQ": {
-            "mean": task_accuracy_mean_MV_HQ,
-            "sd": task_accuracy_sd_MV_HQ
-        }}
-    print(pd.DataFrame.from_dict(results, orient="index"))
-if MV_ex:
-    task_accuracy_mean_MV = np.mean(task_accuracy_MV)
-    task_accuracy_sd_MV = np.std(task_accuracy_MV)
-    results = {
-        "MV": {
-            "mean": task_accuracy_mean_MV,
-            "sd": task_accuracy_sd_MV
-        }}
-    print(pd.DataFrame.from_dict(results, orient="index"))
-if GTIC_ex:
-    task_accuracy_mean_gtic = np.mean(task_accuracy_gtic)
-    task_accuracy_sd_gtic = np.std(task_accuracy_gtic)
-    results = {
-        "GTIC": {
-            "mean": task_accuracy_mean_gtic,
-            "sd": task_accuracy_sd_gtic
-        }}
-    print(pd.DataFrame.from_dict(results, orient="index"))
-if Multispa_ex:
-    task_accuracy_mean_multispa = np.mean(task_accuracy_multispa)
-    task_accuracy_sd_multisp = np.std(task_accuracy_multispa)
-    results = {
-        "MultiSPA": {
-            "mean": task_accuracy_mean_multispa,
-            "sd": task_accuracy_sd_multisp
-        }}
-    print(pd.DataFrame.from_dict(results, orient="index"))
-if GLAD_ex:
-    task_accuracy_mean_glad = np.mean(task_accuracy_glad)
-    task_accuracy_sd_glad = np.std(task_accuracy_glad)
-    results = {
-        "GLAD": {
-            "mean": task_accuracy_mean_glad,
-            "sd": task_accuracy_sd_glad
-        }}
-    print(pd.DataFrame.from_dict(results, orient="index"))
+    if ENABLE["DS"]:
+        y_pred = model._init_task_member_ds(rating)[:, 1]
+        produced["DS"] = y_pred
 
-end = time.perf_counter()
-runtime = end - start
+    if ENABLE["MV_HQ"]:
+        y_pred = np.full(N_TASK, -1)
+        for t in range(N_TASK):
+            hq = np.where(worker_label[:, y_true[t]] == 1)[0]
+            labs = rating[np.isin(rating[:, 1], hq) & (rating[:, 0] == t)][:, 2]
+            if len(labs):
+                y_pred[t] = mode(labs, axis=None).mode.item()
+        produced["MV_HQ"] = y_pred
 
-print("Runtime:", runtime)
+    if ENABLE["MV"]:
+        y_pred = np.full(N_TASK, -1, dtype=int)
+        for t in range(N_TASK):
+            labs = rating[rating[:, 0] == t][:, 2]
+            if len(labs):
+                y_pred[t] = mode(labs, axis=None).mode.item()
+        produced["MV"] = y_pred
 
+    if ENABLE["GLAD"]:
+        y_pred, _ = peerA(rating, N_TASK_GROUPS, N_WORKER)._GLAD()
+        produced["GLAD"] = y_pred
 
+    if ENABLE["MultiSPA"]:
+        y_pred = multispa_fit_predict(
+            rating, K=N_TASK_GROUPS, assume_triplets=True).y_hat
+        produced["MultiSPA"] = y_pred
 
-    
+    if ENABLE["GTIC"]:
+        y_pred = gtic(
+            rating, n=N_TASK, m=N_WORKER, K=N_TASK_GROUPS, missing_val=-1).y_hat
+        produced["GTIC"] = y_pred
 
+    # ---- evaluate everything the same way and record ----
+    for name, y_pred in produced.items():
+        scores = evaluate(y_true, y_pred, N_TASK_GROUPS)
+        for key, val in scores.items():
+            metrics[name][key].append(val)
 
+    # ---- persist after every run so a timeout can't lose finished runs ----
+    save_json(os.path.join(OUT_DIR, "metrics_raw.json"), metrics)
+    print(f"[run {i + 1}/{N_RUNS}] done; results saved to {OUT_DIR}")
 
+# --------------------------------------------------------------------------- #
+#  summarize, print, and save
+# --------------------------------------------------------------------------- #
+summary_df = build_summary(metrics)
+pd.set_option("display.width", 200, "display.max_columns", None)
+print("\n==== SUMMARY ====")
+print(summary_df)
 
+summary_df.to_csv(os.path.join(OUT_DIR, "summary.csv"))
+save_json(os.path.join(OUT_DIR, "summary.json"), summary_df.to_dict(orient="index"))
+save_json(os.path.join(OUT_DIR, "config.json"),
+          {"run_id": RUN_ID, "n_runs": N_RUNS, "maxiter": MAXITER,
+           "enable": ENABLE, "data_kw": DATA_KW})
 
-    
-    
-    
-    
-
-    
+runtime = time.perf_counter() - start
+print(f"\nRuntime: {runtime:.1f}s   |   all outputs in: {OUT_DIR}")

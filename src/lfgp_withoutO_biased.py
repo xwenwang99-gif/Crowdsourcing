@@ -865,6 +865,171 @@ class LFGP():
     def task_acc(self, data, key):
         new_U = self.label_swap(self.U, key)
         return np.mean(new_U == key)
+    
+    def calculate_likelihood_worker_scores(self,
+                                       clusters,
+                                       temperature=1.0,
+                                       priors=None,
+                                       standardize=True,
+                                       eps=1e-12):
+        '''
+    Calculate likelihood-side worker scores from the learned worker embeddings.
+
+    This function converts the likelihood embedding B[j, g, :] into a scalar
+    HQ score for each worker-task-group pair, with the SAME 2D shape as the
+    spectral score matrix:
+
+        likelihood_score[j, g]
+
+    Main returned score:
+        score[j, g] = q_L(W_jg = HQ | B[j,g,:])
+
+    where q_L is a softmax over distance-based log-evidence to the three
+    likelihood centers:
+        tier 0 = LQ
+        tier 1 = HQ
+        tier 2 = biased
+
+    Parameters
+    ----------
+    clusters : np.ndarray
+        Cluster centers returned by _mc_fit.
+        Expected shape: (3, lf_dim, n_task_group).
+        clusters[0, :, g] = LQ center, usually zero
+        clusters[1, :, g] = HQ center
+        clusters[2, :, g] = biased center
+
+    temperature : float
+        Softmax temperature for distance evidence.
+        Smaller temperature -> harder membership.
+        Larger temperature -> softer membership.
+
+    priors : None or array-like
+        Optional prior probabilities for tiers.
+        Shape can be (3,) or (n_task_group, 3).
+        If None, uniform priors are used.
+
+    standardize : bool
+        If True, also return a within-task-group z-scored version of the
+        likelihood HQ score. This is usually the version to linearly combine
+        with a similarly standardized spectral score.
+
+    eps : float
+        Numerical stability constant.
+
+    Returns
+    -------
+    out : dict
+        out["score"] :
+            Shape (n_worker, n_task_group).
+            HQ posterior score q_L[j,g,H]. Larger means more HQ-like.
+
+        out["score_z"] :
+            Shape (n_worker, n_task_group).
+            Group-wise standardized version of score. Use this for direct
+            linear combination with standardized spectral scores.
+
+        out["tier_prob"] :
+            Shape (n_worker, n_task_group, 3).
+            Soft likelihood-only tier probabilities.
+
+        out["log_evidence"] :
+            Shape (n_worker, n_task_group, 3).
+            Distance-based log evidence for LQ/HQ/biased.
+
+        out["dist_sq"] :
+            Shape (n_worker, n_task_group, 3).
+            Squared distances from worker embedding to each tier center.
+
+        out["hq_advantage"] :
+            Shape (n_worker, n_task_group).
+            Log-evidence advantage of HQ over the best non-HQ tier.
+            Positive means HQ is more likely than both LQ and biased.
+        '''
+
+        B = np.asarray(self.B, dtype=float)
+        clusters = np.asarray(clusters, dtype=float)
+
+        if B.ndim != 3:
+            raise ValueError(
+                "self.B must have shape (n_worker, n_task_group, lf_dim)."
+            )
+
+        n_worker, n_task_group, lf_dim = B.shape
+
+        if clusters.shape != (3, lf_dim, n_task_group):
+            raise ValueError(
+                "clusters must have shape (3, lf_dim, n_task_group). "
+                f"Got {clusters.shape}, expected {(3, lf_dim, n_task_group)}."
+            )
+
+        if temperature <= 0:
+            raise ValueError("temperature must be positive.")
+
+        # Convert centers to shape (n_task_group, 3, lf_dim)
+        centers = np.transpose(clusters, (2, 0, 1))
+
+        # dist_sq[j, g, t] = || B[j,g,:] - center[g,t,:] ||^2
+        diff = B[:, :, None, :] - centers[None, :, :, :]
+        dist_sq = np.sum(diff ** 2, axis=-1)
+
+        # Distance-based likelihood evidence:
+        #
+        # ell^L_{jgt} = - ||B[j,g,:] - mu[g,t,:]||^2 / temperature
+        #
+        # Larger means worker j is closer to tier center t in task group g.
+        log_evidence = -dist_sq / temperature
+
+        # Add tier priors if provided.
+        if priors is not None:
+            priors = np.asarray(priors, dtype=float)
+
+            if priors.shape == (3,):
+                log_prior = np.log(priors + eps)[None, None, :]
+            elif priors.shape == (n_task_group, 3):
+                log_prior = np.log(priors + eps)[None, :, :]
+            else:
+                raise ValueError(
+                    "priors must have shape (3,) or (n_task_group, 3)."
+                )
+
+            log_evidence = log_evidence + log_prior
+
+        # Stable softmax over tiers.
+        max_log = np.max(log_evidence, axis=2, keepdims=True)
+        exp_log = np.exp(log_evidence - max_log)
+        tier_prob = exp_log / (np.sum(exp_log, axis=2, keepdims=True) + eps)
+
+        # Scalar likelihood score with the SAME shape as spectral score:
+        # score[j,g] = likelihood-only probability of HQ.
+        #
+        # tier convention:
+        #   0 = LQ
+        #   1 = HQ
+        #   2 = biased
+        score = tier_prob[:, :, 1]
+
+        # HQ advantage over the best non-HQ tier.
+        # Positive means HQ evidence is stronger than both LQ and biased evidence.
+        non_hq_best = np.maximum(log_evidence[:, :, 0], log_evidence[:, :, 2])
+        hq_advantage = log_evidence[:, :, 1] - non_hq_best
+
+        # Group-wise z-score, useful for linear combination with spectral score.
+        if standardize:
+            mean_g = np.nanmean(score, axis=0, keepdims=True)
+            std_g = np.nanstd(score, axis=0, keepdims=True)
+            score_z = (score - mean_g) / (std_g + eps)
+        else:
+            score_z = None
+
+        return {
+            "score": score,
+            "score_z": score_z,
+            "tier_prob": tier_prob,
+            "log_evidence": log_evidence,
+            "dist_sq": dist_sq,
+            "hq_advantage": hq_advantage,
+        }
             
             
             
