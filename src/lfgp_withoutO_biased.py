@@ -257,11 +257,11 @@ class LFGP():
         for j in range(n_task_group):
             mask0 = (V[:, j] == 0)
             mask1 = (V[:, j] == 1)
-            mask0 = (V[:, j] == 0)
-            mask1 = (V[:, j] == 1)
             mask2 = (V[:, j] == 2)
             if mask0.any():
-                penalty2 += lambda2_0 * torch.linalg.norm(B[mask0, j, :])
+                # LQ center: origin in the "free2" scheme, a free mean in "free3"
+                center0 = clusters[0, :, j]
+                penalty2 += lambda2_0 * torch.linalg.norm(B[mask0, j, :] - center0)
             if mask1.any():
                 center1 = clusters[1, :, j]
                 penalty2 += lambda2_1 * torch.linalg.norm(B[mask1, j, :] - center1)
@@ -427,95 +427,108 @@ class LFGP():
     
         return np.array(Grp_perm)
     
-    def new_kmeans_gpu_3cluster(self, X, lf_dim, n_worker, max_iter=300, tol=1e-4):
+    def new_kmeans_gpu_3cluster(self, X, lf_dim, n_worker, max_iter=300, tol=1e-4,
+                                bias_scheme="free2"):
         """
-        3-cluster KMeans with the following structure matching the new penalty:
-          center[0] = fixed at origin          (LQ workers,     W=0)
-          center[1] = free HQ centroid         (HQ workers,     W=1)
-          center[2] = biased centroid,         (biased workers, W=2)
-                      orthogonalized against center[1] after each update
-    
+        3-cluster KMeans matching the worker-group penalty. In both schemes
+        the groups are identified through the magnitude of the center norms:
+          label 0 = LQ      (smallest-norm center)
+          label 1 = HQ      (largest-norm center)
+          label 2 = biased  (middle-norm center)
+
+        bias_scheme:
+          "free2" — center[0] is fixed at the origin (LQ, W=0);
+                    centers 1 and 2 are free means
+          "free3" — all three centers are free means
+
         X      : (n_worker, lf_dim) torch tensor on DEVICE
         Returns: labels  (n_worker,)     — 0=LQ, 1=HQ, 2=biased
                  centers (3, lf_dim)     — both on DEVICE
         """
         centers = torch.zeros(3, lf_dim, device=DEVICE)
-    
+
         # Initialise center[1] (HQ) as the worker with the largest norm
         norms = torch.linalg.norm(X, dim=1)
         centers[1] = X[torch.argmax(norms)]
-    
+
         # Initialise center[2] (biased) as the worker with the largest norm
         # in the direction orthogonal to center[1]
         proj = (X @ centers[1]) / (torch.linalg.norm(centers[1]) ** 2 + 1e-12)
         X_orth = X - proj.unsqueeze(1) * centers[1].unsqueeze(0)  # (n_worker, lf_dim)
         orth_norms = torch.linalg.norm(X_orth, dim=1)
         centers[2] = X[torch.argmax(orth_norms)]
-        # Immediately orthogonalize center[2] against center[1]
-        centers[2] = centers[2] - (
-            (centers[2] @ centers[1]) /
-            (torch.linalg.norm(centers[1]) ** 2 + 1e-12)
-        ) * centers[1]
-    
+
+        if bias_scheme == "free3":
+            # Initialise center[0] (LQ) as the worker with the smallest norm
+            centers[0] = X[torch.argmin(norms)]
+
         labels = torch.zeros(n_worker, dtype=torch.long, device=DEVICE)
-    
+
         for _ in range(max_iter):
             # ── Assignment step ──────────────────────────────────────────
             # distances: (n_worker, 3)
             diff = X.unsqueeze(1) - centers.unsqueeze(0)   # (n_worker, 3, lf_dim)
             distances = torch.linalg.norm(diff, dim=2)      # (n_worker, 3)
             new_labels = torch.argmin(distances, dim=1)
-    
+
             # ── Update step ──────────────────────────────────────────────
             new_centers = centers.clone()
-    
-            # center[0] stays fixed at origin — never updated
+
+            # center[0]: fixed at origin in "free2", free mean in "free3"
+            if bias_scheme == "free3":
+                pts_lq = X[new_labels == 0]
+                if len(pts_lq) > 0:
+                    new_centers[0] = pts_lq.mean(0)
+
             # center[1]: mean of HQ-assigned workers
             pts_hq = X[new_labels == 1]
             if len(pts_hq) > 0:
                 new_centers[1] = pts_hq.mean(0)
-    
-            # center[2]: mean of biased-assigned workers, then project ⊥ center[1]
+
+            # center[2]: mean of biased-assigned workers
             pts_bias = X[new_labels == 2]
             if len(pts_bias) > 0:
-                gamma_raw = pts_bias.mean(0)
-                # Gram-Schmidt: remove component along center[1]
-                new_centers[2] = gamma_raw - (
-                    (gamma_raw @ new_centers[1]) /
-                    (torch.linalg.norm(new_centers[1]) ** 2 + 1e-12)
-                ) * new_centers[1]
-    
+                new_centers[2] = pts_bias.mean(0)
+
             # ── Convergence check ────────────────────────────────────────
             if torch.all(torch.abs(new_centers - centers) < tol):
                 labels = new_labels
                 centers = new_centers
                 break
-    
+
             centers = new_centers
             labels = new_labels
-    
-        # ── Label disambiguation ─────────────────────────────────────────
-        # Ensure center[1] (HQ) has larger norm than center[2] (biased).
-        # If not, swap labels 1 and 2 so the stronger non-zero centroid
-        # is always called HQ — the eigendecomposition step will
-        # resolve which is truly HQ vs biased downstream.
-        if torch.linalg.norm(centers[2]) > torch.linalg.norm(centers[1]):
-            swap_mask = (labels == 1) | (labels == 2)
-            labels[swap_mask] = 3 - labels[swap_mask]   # 1↔2
-            centers[[1, 2]] = centers[[2, 1]]
-    
+
+        # ── Label disambiguation by center-norm magnitude ────────────────
+        # smallest-norm center → LQ (0), largest → HQ (1), middle → biased (2).
+        # In the "free2" scheme center[0] is the origin (norm 0), so it always
+        # keeps the LQ label and this reduces to the 1↔2 swap.
+        center_norms = torch.linalg.norm(centers, dim=1)
+        order = torch.argsort(center_norms)                 # ascending
+        relabel = torch.empty(3, dtype=torch.long, device=DEVICE)
+        relabel[order[0]] = 0   # smallest norm → LQ
+        relabel[order[2]] = 1   # largest norm  → HQ
+        relabel[order[1]] = 2   # middle norm   → biased
+        labels = relabel[labels]
+        centers = centers[torch.stack([order[0], order[2], order[1]])]
+
         return labels, centers
 
 
 
   
     
-    def _mc_fit(self, data, key, scheme="mv", maxiter=50, epsilon=1e-5, verbose=0, A = None, B = None):
+    def _mc_fit(self, data, key, scheme="mv", maxiter=50, epsilon=1e-5, verbose=0, A = None, B = None,
+                bias_scheme="free2"):
         """
         GPU-accelerated drop-in replacement for _mc_fit.
         self must have: A, B, U, V, lf_dim, n_task, n_worker, n_task_group,
                         lambda1, lambda2_0, lambda2_1, n_record,
                         _init_mc_params, label_swap
+        bias_scheme: passed to new_kmeans_gpu_3cluster — "free2" keeps the LQ
+        penalty center fixed at the origin with two free centers; "free3" lets
+        all three centers move freely. In both cases groups are identified by
+        center-norm magnitude (smallest=LQ, largest=HQ, middle=biased).
         """
         acc_with_iter = []
         self._init_mc_params(data, A, B, scheme=scheme)
@@ -594,7 +607,7 @@ class LFGP():
             # ── Update B (all workers × groups) ──
             B = self.multinomial_reg2_batched(
                 B, A, None, obs_idx_per_worker_group,
-                V, self.lambda2_1, self.lambda2_0, clusters,
+                V, self.lambda2_0, self.lambda2_1, clusters,
                 n_task_group
             )
     
@@ -607,7 +620,8 @@ class LFGP():
             # ── Update V via GPU KMeans ──
             for t in range(n_task_group):
                 B_slice = B[:, t, :]   # (n_worker, k)
-                labels, centers = self.new_kmeans_gpu_3cluster(B_slice, lf_dim, self.n_worker)
+                labels, centers = self.new_kmeans_gpu_3cluster(
+                    B_slice, lf_dim, self.n_worker, bias_scheme=bias_scheme)
                 V_cur[:, t] = labels
                 clusters[:, :, t] = centers
     
@@ -729,32 +743,7 @@ class LFGP():
     
         return new_U
     
-    def diagnosis(self, worker_label, data):
-        
-        for t in range(self.n_task_group):
-            fig, axes = plt.subplots(1, 2, figsize=(12, 5))
-            wrong_hq_worker = np.where((self.V[:, t] == 1) & (worker_label[:, t] == 0))[0]
-            correct_hq_worker = np.where((self.V[:, t] == 1) & (worker_label[:, t] == 1))[0]
-            task_labeled_t = np.where(self.U == t)
-            wrong_labels = np.where(np.isin(data[:, 0], task_labeled_t) & np.isin(data[:, 1], wrong_hq_worker))
-            correct_labels = np.where(np.isin(data[:, 0], task_labeled_t) & np.isin(data[:, 1], correct_hq_worker))
-            axes[0].hist(data[wrong_labels, 2].flatten(), bins = self.n_task_group, alpha=0.5, label=f'False hq {t+1}', edgecolor='black')
-            axes[1].hist(data[correct_labels, 2].flatten(), bins = self.n_task_group, alpha=0.5, label=f'True hq {t+1}', edgecolor='black')
-            plt.tight_layout()  # Adjusts spacing
-            plt.show()
-    def distance_graph(self, centers, worker_label):
-        for t in range(self.n_task_group):
-            V_tmp = worker_label[:, t]
-            B_tmp = self.B[:, t, :]       
-            B0 = B_tmp[V_tmp == 0]
-            B1 = B_tmp[V_tmp == 1]
-            distance0_0 = np.linalg.norm(B0 - centers[0, :, t], axis=1)
-            distance0_1 = np.linalg.norm(B0 - centers[1, :, t], axis=1)
-            distance1_0 = np.linalg.norm(B1 - centers[0, :, t], axis=1)
-            distance1_1 = np.linalg.norm(B1 - centers[1, :, t], axis=1)
-            plt.scatter(distance0_0, distance0_1)
-            plt.scatter(distance1_0, distance1_1)
-            plt.show()
+    
      
     def accuracy_worker(self, data, key):
         new_U = self.label_swap(self.U, key)

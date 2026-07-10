@@ -28,8 +28,9 @@ from src.GTIC import gtic
 from src.multispa import multispa_fit_predict
 from src.getdata_biased import getdata_biased
 from src.eigenInfer import _hq_and_label_infer
-from src.Diagnosis import diagnose, summarize_runs
+from src.Diagnosis import diagnose, summarize_runs,build_tier_vectors, worker_diagnose, worker_diagnose_runs, plot_tier_confusion,build_worker_summary
 from src.peera import peerA
+
 
 warnings.filterwarnings("ignore")
 
@@ -38,22 +39,30 @@ warnings.filterwarnings("ignore")
 # --------------------------------------------------------------------------- #
 N_RUNS        = 1
 MAXITER       = 100
-N_TASK        = 1000
-N_WORKER      = 1000
-N_TASK_GROUPS = 5
-N_WORKER_GROUPS = 10
+N_TASK        = 200
+N_WORKER      = 200
+N_TASK_GROUPS = 10
 
 # which methods to run (replaces the eigen_ex / DS_ex / ... flags)
 ENABLE = {
-    "Eigen_L2": True,
-    "DS":       True,
-    "MV_HQ":    1,
-    "MV":       1,
-    "GLAD":     1,
-    "MultiSPA": 1,
-    "GTIC":     1,
+    "Eigen_L2":   1,   # LFGP fit + spectral worker tiering
+    "Likelihood": 1,   # same LFGP fit, labels via _mc_infer_by_task (no spectral step)
+    "DS":       1,
+    "MV_HQ":    0,
+    "MV":       0,
+    "GLAD":     0,
+    "MultiSPA": 0,
+    "GTIC":     0,
 }
-METHODS = [m for m in ENABLE if ENABLE[m]]
+
+# biased-center scheme for the LFGP worker KMeans / penalty (toggle — one
+# LFGP fit with the selected scheme). Both identify worker groups by
+# center-norm magnitude (smallest=LQ, largest=HQ, middle=biased):
+#   "free2" — two free centers + one center fixed at the origin (LQ)
+#   "free3" — all three centers free
+BIAS_SCHEME = "free2"
+
+METHODS = [m for m, on in ENABLE.items() if on]
 
 DATA_KW = dict(                       # getdata_biased arguments, kept in one place
     n_task=N_TASK, n_worker=N_WORKER, n_task_groups=N_TASK_GROUPS,
@@ -110,6 +119,12 @@ def build_summary(metrics):
             "Bal CI":       [round(b["ci_low"], 4), round(b["ci_high"], 4)],
             "n_runs":       a["n"],
         }
+        if metrics[name].get("cluster_acc"):
+            c = summarize_runs(metrics[name]["cluster_acc"])
+            rows[name].update({
+                "Cluster Acc": c["mean"], "Cluster sd": c["sd"],
+                "Cluster CI":  [round(c["ci_low"], 4), round(c["ci_high"], 4)],
+            })
     return pd.DataFrame.from_dict(rows, orient="index")
 
 
@@ -117,9 +132,15 @@ def build_summary(metrics):
 #  metric store:  metrics[method][metric] -> list over runs
 # --------------------------------------------------------------------------- #
 metrics = {m: {"accuracy": [], "macro_f1": [], "bal_acc": []} for m in METHODS}
+# the LFGP-based methods additionally report the task-grouping (cluster) accuracy
+for _name in ("Eigen_L2", "Likelihood"):
+    if _name in metrics:
+        metrics[_name]["cluster_acc"] = []
 
 start = time.perf_counter()
 
+# worker-tier vectors for Eigen_L2:  tier_lists["true"/"pred"] -> list over runs
+tier_lists = {"true": [], "pred": []}
 for i in range(N_RUNS):
     np.random.seed(i)
 
@@ -127,28 +148,45 @@ for i in range(N_RUNS):
 
     produced = {}   # method name -> predicted label vector for this run
 
-    # LFGP model is needed by both Eigen_L2 and DS
+    # LFGP model is needed by Eigen_L2, Likelihood, and DS
     model = None
-    if ENABLE["Eigen_L2"] or ENABLE["DS"]:
+    if ENABLE["Eigen_L2"] or ENABLE["Likelihood"] or ENABLE["DS"]:
         model = LFGP(lf_dim=N_TASK_GROUPS, n_worker_group=N_TASK_GROUPS,
                      lambda1=1, lambda2_0=1, lambda2_1=2)
         model._prescreen(rating)
 
-    if ENABLE["Eigen_L2"]:
+    # one LFGP fit shared by the likelihood-only and spectral methods
+    if ENABLE["Eigen_L2"] or ENABLE["Likelihood"]:
         A, B, U, V, clusters_np = model._mc_fit(
             rating, key=y_true, scheme="ds", epsilon=1e-5,
-            maxiter=MAXITER, verbose=0, A=task_lf, B=worker_lf,
+            maxiter=MAXITER, verbose=1, A=task_lf, B=worker_lf,
+            bias_scheme=BIAS_SCHEME,
         )
         pred_group = U.astype(int)
-        _, y_pred, _, _ = _hq_and_label_infer(
+
+        cluster_acc = model.task_acc(pred_group, y_true)
+
+    if ENABLE["Likelihood"]:
+        # likelihood step only: majority vote of the fit's own HQ workers (V)
+        metrics["Likelihood"]["cluster_acc"].append(cluster_acc)
+        produced["Likelihood"] = model._mc_infer(rating)
+
+    if ENABLE["Eigen_L2"]:
+        _, y_pred, hq_workers_pred, biased_workers_pred = _hq_and_label_infer(
             pred_group, R_obs, y_true, worker_label,
             N_TASK, N_WORKER, N_TASK_GROUPS,
-            n_worker_groups=None, LABEL_MODE="task", verbose=False,
-            B_PERM=2000, FDR_Q=0.10, MIN_COVERAGE=5,
-            RANDOM_STATE=None, return_spectral=False,
+            LABEL_MODE="group", verbose=False,
+            MIN_COVERAGE=5, return_spectral=False,
         )
-        produced["Eigen_L2"] = y_pred
 
+        yt_tier, yp_tier = build_tier_vectors(
+            worker_label, hq_workers_pred, biased_workers_pred,
+            pred_group, y_true, N_TASK_GROUPS)
+        tier_lists["true"].append(yt_tier)
+        tier_lists["pred"].append(yp_tier)
+
+        metrics["Eigen_L2"]["cluster_acc"].append(cluster_acc)
+        produced["Eigen_L2"] = y_pred
     if ENABLE["DS"]:
         y_pred = model._init_task_member_ds(rating)[:, 1]
         produced["DS"] = y_pred
@@ -206,7 +244,19 @@ summary_df.to_csv(os.path.join(OUT_DIR, "summary.csv"))
 save_json(os.path.join(OUT_DIR, "summary.json"), summary_df.to_dict(orient="index"))
 save_json(os.path.join(OUT_DIR, "config.json"),
           {"run_id": RUN_ID, "n_runs": N_RUNS, "maxiter": MAXITER,
-           "enable": ENABLE, "data_kw": DATA_KW})
+           "enable": ENABLE, "bias_scheme": BIAS_SCHEME, "data_kw": DATA_KW})
+
+if ENABLE["Eigen_L2"]:
+    worker_agg = worker_diagnose_runs(tier_lists["true"], tier_lists["pred"])
+    plot_tier_confusion(                           # the heatmap
+        worker_agg["confusion_rownorm"], annot_counts=worker_agg["confusion_sum"],
+        path=os.path.join(OUT_DIR, "worker_confusion_Eigen_L2.png"),
+        title=f"Worker-tier recovery (Eigen_L2, {BIAS_SCHEME})")
+
+    build_worker_summary(worker_agg).to_csv(
+        os.path.join(OUT_DIR, "summary_worker_Eigen_L2.csv"), index=False)
+
+
 
 runtime = time.perf_counter() - start
 print(f"\nRuntime: {runtime:.1f}s   |   all outputs in: {OUT_DIR}")

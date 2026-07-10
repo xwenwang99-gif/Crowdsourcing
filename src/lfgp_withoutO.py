@@ -422,9 +422,6 @@ class LFGP():
             labels = 1 - labels
     
         return labels, centers
-    
-    
-
 
 
   
