@@ -261,13 +261,13 @@ class LFGP():
             if mask0.any():
                 # LQ center: origin in the "free2" scheme, a free mean in "free3"
                 center0 = clusters[0, :, j]
-                penalty2 += lambda2_0 * torch.linalg.norm(B[mask0, j, :] - center0)
+                penalty2 += lambda2_0 * torch.sum((B[mask0, j, :] - center0) ** 2)
             if mask1.any():
                 center1 = clusters[1, :, j]
-                penalty2 += lambda2_1 * torch.linalg.norm(B[mask1, j, :] - center1)
+                penalty2 += lambda2_1 * torch.sum((B[mask1, j, :] - center1) ** 2)
             if mask2.any():
                 center2 = clusters[2, :, j]
-                penalty2 += lambda2_1 * torch.linalg.norm(B[mask2, j, :] - center2)
+                penalty2 += lambda2_1 * torch.sum((B[mask2, j, :] - center2) ** 2)
     
         return (loss + penalty1 + penalty2).item()
     
@@ -396,7 +396,7 @@ class LFGP():
                     # grad[c,:] = sum_m A[m,:] * (conc1[m,c] - one_hot[m,c])
                     # = (conc1 - one_hot).T @ A   →  (C, k)
                     grad = (conc1 - one_hot).T @ A  # (C, k)
-                    grad += 2 * lambd * (beta - centroid.unsqueeze(0))
+                    grad[group] = grad[group] + 2 * lambd * (beta[group] - centroid)
     
                     if torch.linalg.norm(grad) <= tol:
                         break

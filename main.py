@@ -37,17 +37,17 @@ warnings.filterwarnings("ignore")
 # --------------------------------------------------------------------------- #
 #  configuration
 # --------------------------------------------------------------------------- #
-N_RUNS        = 1
+N_RUNS        = 10
 MAXITER       = 100
 N_TASK        = 200
 N_WORKER      = 200
-N_TASK_GROUPS = 5
+N_TASK_GROUPS = 10
 
 # which methods to run (replaces the eigen_ex / DS_ex / ... flags)
 ENABLE = {
-    "Eigen_L2":   0,   # LFGP fit + spectral worker tiering
-    "Likelihood": 1,   # same LFGP fit, labels via _mc_infer_by_task (no spectral step)
-    "DS":       0,
+    "Eigen_L2":   1,   # LFGP fit + spectral worker tiering
+    "Likelihood": 0,   # same LFGP fit, labels via _mc_infer_by_task (no spectral step)
+    "DS":       1,
     "MV_HQ":    0,
     "MV":       0,
     "GLAD":     0,
