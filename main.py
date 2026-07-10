@@ -41,13 +41,13 @@ N_RUNS        = 1
 MAXITER       = 100
 N_TASK        = 200
 N_WORKER      = 200
-N_TASK_GROUPS = 10
+N_TASK_GROUPS = 5
 
 # which methods to run (replaces the eigen_ex / DS_ex / ... flags)
 ENABLE = {
-    "Eigen_L2":   1,   # LFGP fit + spectral worker tiering
+    "Eigen_L2":   0,   # LFGP fit + spectral worker tiering
     "Likelihood": 1,   # same LFGP fit, labels via _mc_infer_by_task (no spectral step)
-    "DS":       1,
+    "DS":       0,
     "MV_HQ":    0,
     "MV":       0,
     "GLAD":     0,
@@ -139,8 +139,8 @@ for _name in ("Eigen_L2", "Likelihood"):
 
 start = time.perf_counter()
 
-# worker-tier vectors for Eigen_L2:  tier_lists["true"/"pred"] -> list over runs
-tier_lists = {"true": [], "pred": []}
+# per-method worker-tier vectors:  tier_lists[method]["true"/"pred"] -> list over runs
+tier_lists = {name: {"true": [], "pred": []} for name in ("Eigen_L2", "Likelihood")}
 for i in range(N_RUNS):
     np.random.seed(i)
 
@@ -168,6 +168,14 @@ for i in range(N_RUNS):
 
     if ENABLE["Likelihood"]:
         # likelihood step only: majority vote of the fit's own HQ workers (V)
+        hq_lik = [np.where(V[:, g] == 1)[0] for g in range(N_TASK_GROUPS)]
+        biased_lik = [np.where(V[:, g] == 2)[0] for g in range(N_TASK_GROUPS)]
+        yt_tier, yp_tier = build_tier_vectors(
+            worker_label, hq_lik, biased_lik,
+            pred_group, y_true, N_TASK_GROUPS)
+        tier_lists["Likelihood"]["true"].append(yt_tier)
+        tier_lists["Likelihood"]["pred"].append(yp_tier)
+
         metrics["Likelihood"]["cluster_acc"].append(cluster_acc)
         produced["Likelihood"] = model._mc_infer(rating)
 
@@ -182,8 +190,8 @@ for i in range(N_RUNS):
         yt_tier, yp_tier = build_tier_vectors(
             worker_label, hq_workers_pred, biased_workers_pred,
             pred_group, y_true, N_TASK_GROUPS)
-        tier_lists["true"].append(yt_tier)
-        tier_lists["pred"].append(yp_tier)
+        tier_lists["Eigen_L2"]["true"].append(yt_tier)
+        tier_lists["Eigen_L2"]["pred"].append(yp_tier)
 
         metrics["Eigen_L2"]["cluster_acc"].append(cluster_acc)
         produced["Eigen_L2"] = y_pred
@@ -246,17 +254,23 @@ save_json(os.path.join(OUT_DIR, "config.json"),
           {"run_id": RUN_ID, "n_runs": N_RUNS, "maxiter": MAXITER,
            "enable": ENABLE, "bias_scheme": BIAS_SCHEME, "data_kw": DATA_KW})
 
-if ENABLE["Eigen_L2"]:
-    worker_agg = worker_diagnose_runs(tier_lists["true"], tier_lists["pred"])
-    plot_tier_confusion(                           # the heatmap
+for _name in ("Eigen_L2", "Likelihood"):
+    if not ENABLE[_name] or not tier_lists[_name]["true"]:
+        continue
+    worker_agg = worker_diagnose_runs(
+        tier_lists[_name]["true"], tier_lists[_name]["pred"])
+    plot_tier_confusion(                           # the heatmap (one file per method)
         worker_agg["confusion_rownorm"], annot_counts=worker_agg["confusion_sum"],
-        path=os.path.join(OUT_DIR, "worker_confusion_Eigen_L2.png"),
-        title=f"Worker-tier recovery (Eigen_L2, {BIAS_SCHEME})")
+        path=os.path.join(OUT_DIR, f"worker_confusion_{_name}.png"),
+        title=f"Worker-tier recovery ({_name}, {BIAS_SCHEME})")
 
     build_worker_summary(worker_agg).to_csv(
-        os.path.join(OUT_DIR, "summary_worker_Eigen_L2.csv"), index=False)
+        os.path.join(OUT_DIR, f"summary_worker_{_name}.csv"), index=False)
 
 
 
 runtime = time.perf_counter() - start
+save_json(os.path.join(OUT_DIR, "runtime.json"),
+          {"runtime_sec": round(runtime, 1), "n_runs": N_RUNS,
+           "sec_per_run": round(runtime / N_RUNS, 1)})
 print(f"\nRuntime: {runtime:.1f}s   |   all outputs in: {OUT_DIR}")
