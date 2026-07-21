@@ -1,106 +1,159 @@
-# -*- coding: utf-8 -*-
-"""
-Created on Mon Jun  3 12:32:46 2024
-
-@author: wangl
-"""
 import numpy as np
-import logging
-def list2array(class_num, dataset_list):
-    task_num, worker_num, class_num = len(dataset_list), len(dataset_list[0]), class_num
-    dataset_tensor = np.zeros((task_num, worker_num, class_num))
+from scipy.special import logsumexp
 
-    for task_i in range(task_num): 
-        for worker_j in range(worker_num): 
-            for predict_label_k in dataset_list[task_i][worker_j]:
-                dataset_tensor[task_i][worker_j][predict_label_k] += 1
-
-    return dataset_tensor
 
 class DawidSkeneModel:
-    def __init__(self,
-                 class_num,
-                 max_iter = 100,
-                 tolerance = 0.01) -> None:
+    def __init__(
+        self,
+        class_num,
+        max_iter=100,
+        tolerance=1e-6,
+        smoothing=1e-2,
+    ):
         self.class_num = class_num
         self.max_iter = max_iter
         self.tolerance = tolerance
+        self.smoothing = smoothing
 
     def run(self, dataset):
-        self.task_num, self.worker_num, _ = dataset.shape
-        self.dataset_tensor = dataset
-        predict_label =  self.dataset_tensor.sum(1) / self.dataset_tensor.sum(1).sum(1).reshape(-1, 1)
+        self.dataset_tensor = np.asarray(dataset, dtype=np.float64)
 
-        flag = True
-        prev_error_rates, prev_predict_label = None, None
-        iter_num = 0
+        self.task_num, self.worker_num, observed_class_num = (
+            self.dataset_tensor.shape
+        )
 
-        while flag:
+        if observed_class_num != self.class_num:
+            raise ValueError(
+                f"Dataset has {observed_class_num} classes, "
+                f"but class_num={self.class_num}."
+            )
+
+        # Majority-vote initialization with smoothing.
+        votes = self.dataset_tensor.sum(axis=1)  # task x observed class
+        vote_totals = votes.sum(axis=1, keepdims=True)
+
+        predict_label = (
+            votes + self.smoothing
+        ) / (
+            vote_totals + self.smoothing * self.class_num
+        )
+
+        for iter_num in range(self.max_iter):
             error_rates = self._m_step(predict_label)
-            next_predict_label = self._e_step(predict_label, error_rates)
-            log_L = self._get_likelihood(predict_label, error_rates)
+            next_predict_label = self._e_step(
+                predict_label,
+                error_rates,
+            )
 
-            if iter_num == 0:
-                logging.info("{}\t{}".format(iter_num, log_L))
-            else:
-                marginal_predict = np.sum(predict_label, 0) / self.task_num
-                prev_marginal_predict = np.sum(prev_predict_label, 0) / self.task_num
-                marginals_diff = np.sum(np.abs(marginal_predict - prev_marginal_predict))
-                error_rates_diff = np.sum(np.abs(error_rates - prev_error_rates))
+            posterior_diff = np.max(
+                np.abs(next_predict_label - predict_label)
+            )
 
-                if self._check_condition(marginals_diff, error_rates_diff, iter_num):
-                    flag = False
-
-            prev_error_rates = error_rates
-            prev_predict_label = predict_label
             predict_label = next_predict_label
-            iter_num += 1
 
-        worker_reliability = {}
-        for i in range(self.worker_num):
-            ie_rates = marginal_predict * error_rates[i, :, :]
-            reliability = np.sum(np.diag(ie_rates))
-            worker_reliability[i] = reliability
-            
-        return marginal_predict, error_rates, worker_reliability, predict_label
+            if posterior_diff < self.tolerance:
+                break
 
-    def _check_condition(self, marginals_diff, error_rates_diff, iter_num):
-        return (marginals_diff < self.tolerance and error_rates_diff < self.tolerance) or iter_num > self.max_iter
+        # Recompute parameters using the final task posteriors.
+        error_rates = self._m_step(predict_label)
+
+        marginal_predict = (
+            predict_label.sum(axis=0) + self.smoothing
+        ) / (
+            self.task_num + self.smoothing * self.class_num
+        )
+
+        worker_reliability = {
+            worker: np.dot(
+                marginal_predict,
+                np.diag(error_rates[worker]),
+            )
+            for worker in range(self.worker_num)
+        }
+
+        return (
+            marginal_predict,
+            error_rates,
+            worker_reliability,
+            predict_label,
+        )
 
     def _m_step(self, predict_label):
-        error_rates = np.zeros((self.worker_num, self.class_num, self.class_num))
+        """
+        counts[w, c, l] =
+            expected number of times worker w outputs l
+            when the true class is c.
+        """
+        counts = np.einsum(
+            "ic,iwl->wcl",
+            predict_label,
+            self.dataset_tensor,
+        )
 
-        # Equation 2.3
-        for i in range(self.class_num):
-            worker_error_rate = np.dot(predict_label[:, i], self.dataset_tensor.transpose(1, 0 ,2))
-            sum_worker_error_rate = worker_error_rate.sum(1)
-            sum_worker_error_rate = np.where(sum_worker_error_rate == 0 , -10e9, sum_worker_error_rate)
-            error_rates[:, i, :] = worker_error_rate / sum_worker_error_rate.reshape(-1,1)                                                                        
+        # Dirichlet smoothing prevents zero confusion probabilities.
+        counts += self.smoothing
+
+        error_rates = counts / counts.sum(
+            axis=2,
+            keepdims=True,
+        )
+
         return error_rates
-    
-    def _e_step(self, predict_label, error_rates):
-        marginal_probability = predict_label.sum(0) / self.task_num
-        next_predict_label = np.zeros([self.task_num, self.class_num])
 
-        # Equation 2.5
-        for i in range(self.task_num):
-            class_likelood = self._get_class_likelood(error_rates, self.dataset_tensor[i])
-            next_predict_label[i] = marginal_probability * class_likelood
-            sum_marginal_probability = next_predict_label[i].sum()
-            sum_marginal_probability = np.where(sum_marginal_probability == 0 , -10e9, sum_marginal_probability)
-            next_predict_label[i] /= sum_marginal_probability
-        return next_predict_label
+    def _e_step(self, predict_label, error_rates):
+        marginal_probability = (
+            predict_label.sum(axis=0) + self.smoothing
+        ) / (
+            self.task_num + self.smoothing * self.class_num
+        )
+
+        # log_error_rates[w, true_class, observed_class]
+        log_error_rates = np.log(
+            np.clip(error_rates, 1e-300, 1.0)
+        )
+
+        # log_likelihood[i, c]
+        # = sum_w sum_l n[i,w,l] log(pi[w,c,l])
+        log_likelihood = np.einsum(
+            "iwl,wcl->ic",
+            self.dataset_tensor,
+            log_error_rates,
+        )
+
+        log_joint = (
+            log_likelihood
+            + np.log(marginal_probability)[None, :]
+        )
+
+        # Stable posterior normalization.
+        log_posterior = log_joint - logsumexp(
+            log_joint,
+            axis=1,
+            keepdims=True,
+        )
+
+        return np.exp(log_posterior)
 
     def _get_likelihood(self, predict_label, error_rates):
-        log_L = 0
-        marginal_probability = predict_label.sum(0) / self.task_num
+        marginal_probability = (
+            predict_label.sum(axis=0) + self.smoothing
+        ) / (
+            self.task_num + self.smoothing * self.class_num
+        )
 
-        # Equation 2.7
-        for i in range(self.task_num):
-            class_likelood = self._get_class_likelood(error_rates, self.dataset_tensor[i])
-            log_L += np.log((marginal_probability * class_likelood).sum())
-        return log_L
+        log_error_rates = np.log(
+            np.clip(error_rates, 1e-300, 1.0)
+        )
 
-    def _get_class_likelood(self, error_rates, task_tensor):
-        # \sum_{j=1}^J p_{j} \prod_{k=1}^K \prod_{l=1}^J\left(\pi_{j l}^{(k)}\right)^{n_{il}^{(k)}}
-        return np.power(error_rates.transpose(0, 2, 1), np.broadcast_to(task_tensor.reshape(self.worker_num, self.class_num, 1), (self.worker_num, self.class_num, self.class_num))).transpose(1, 2, 0).prod(0).prod(1)
+        log_likelihood = np.einsum(
+            "iwl,wcl->ic",
+            self.dataset_tensor,
+            log_error_rates,
+        )
+
+        log_joint = (
+            log_likelihood
+            + np.log(marginal_probability)[None, :]
+        )
+
+        return np.sum(logsumexp(log_joint, axis=1))

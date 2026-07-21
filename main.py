@@ -29,6 +29,7 @@ from src.multispa import multispa_fit_predict
 from src.getdata_biased import getdata_biased
 from src.eigenInfer import _hq_and_label_infer
 from src.Diagnosis import diagnose, summarize_runs,build_tier_vectors, worker_diagnose, worker_diagnose_runs, plot_tier_confusion,build_worker_summary
+from src.hq_vote_diagnostic import hq_vote_report
 from src.peera import peerA
 
 
@@ -39,14 +40,14 @@ warnings.filterwarnings("ignore")
 # --------------------------------------------------------------------------- #
 N_RUNS        = 10
 MAXITER       = 100
-N_TASK        = 200
-N_WORKER      = 200
+N_TASK        = 500
+N_WORKER      = 500
 N_TASK_GROUPS = 10
 
 # which methods to run (replaces the eigen_ex / DS_ex / ... flags)
 ENABLE = {
     "Eigen_L2":   1,   # LFGP fit + spectral worker tiering
-    "Likelihood": 0,   # same LFGP fit, labels via _mc_infer_by_task (no spectral step)
+    "Likelihood": 1,   # same LFGP fit, labels via _mc_infer_by_task (no spectral step)
     "DS":       1,
     "MV_HQ":    0,
     "MV":       0,
@@ -61,6 +62,7 @@ ENABLE = {
 #   "free2" — two free centers + one center fixed at the origin (LQ)
 #   "free3" — all three centers free
 BIAS_SCHEME = "free2"
+DRAW_HQ_VOTES = 1
 
 METHODS = [m for m, on in ENABLE.items() if on]
 
@@ -133,7 +135,7 @@ def build_summary(metrics):
 # --------------------------------------------------------------------------- #
 metrics = {m: {"accuracy": [], "macro_f1": [], "bal_acc": []} for m in METHODS}
 # the LFGP-based methods additionally report the task-grouping (cluster) accuracy
-for _name in ("Eigen_L2", "Likelihood"):
+for _name in ("Eigen_L2", "Likelihood", "DS"):
     if _name in metrics:
         metrics[_name]["cluster_acc"] = []
 
@@ -152,7 +154,7 @@ for i in range(N_RUNS):
     model = None
     if ENABLE["Eigen_L2"] or ENABLE["Likelihood"] or ENABLE["DS"]:
         model = LFGP(lf_dim=N_TASK_GROUPS, n_worker_group=N_TASK_GROUPS,
-                     lambda1=1, lambda2_0=1, lambda2_1=2)
+                     lambda1=1, lambda2_0=1, lambda2_1=1)
         model._prescreen(rating)
 
     # one LFGP fit shared by the likelihood-only and spectral methods
@@ -163,7 +165,6 @@ for i in range(N_RUNS):
             bias_scheme=BIAS_SCHEME,
         )
         pred_group = U.astype(int)
-
         cluster_acc = model.task_acc(pred_group, y_true)
 
     if ENABLE["Likelihood"]:
@@ -176,14 +177,16 @@ for i in range(N_RUNS):
         tier_lists["Likelihood"]["true"].append(yt_tier)
         tier_lists["Likelihood"]["pred"].append(yp_tier)
 
+        #y_pred = model._mc_infer(rating )
+        y_pred = model._mc_infer_by_task(rating)
         metrics["Likelihood"]["cluster_acc"].append(cluster_acc)
-        produced["Likelihood"] = model._mc_infer(rating)
+        produced["Likelihood"] = y_pred.astype(int)
 
-    if ENABLE["Eigen_L2"]:
+    if ENABLE["Eigen_L2"]:        
         _, y_pred, hq_workers_pred, biased_workers_pred = _hq_and_label_infer(
             pred_group, R_obs, y_true, worker_label,
             N_TASK, N_WORKER, N_TASK_GROUPS,
-            LABEL_MODE="group", verbose=False,
+            LABEL_MODE="task", verbose=False,
             MIN_COVERAGE=5, return_spectral=False,
         )
 
@@ -193,11 +196,18 @@ for i in range(N_RUNS):
         tier_lists["Eigen_L2"]["true"].append(yt_tier)
         tier_lists["Eigen_L2"]["pred"].append(yp_tier)
 
+        hq_vote_report(rating, pred_group, hq_workers_pred, N_TASK_GROUPS,
+               OUT_DIR, f"Eigen_L2_run{i}",
+               y_true=y_true, draw=bool(DRAW_HQ_VOTES))
+
         metrics["Eigen_L2"]["cluster_acc"].append(cluster_acc)
         produced["Eigen_L2"] = y_pred
+
     if ENABLE["DS"]:
         y_pred = model._init_task_member_ds(rating)[:, 1]
-        produced["DS"] = y_pred
+        cluster_acc = model.task_acc(y_pred, y_true)
+        metrics["DS"]["cluster_acc"].append(cluster_acc)
+        produced["DS"] = y_pred        
 
     if ENABLE["MV_HQ"]:
         y_pred = np.full(N_TASK, -1)

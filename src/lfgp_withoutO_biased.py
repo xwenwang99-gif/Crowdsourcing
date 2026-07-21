@@ -14,6 +14,7 @@ import matplotlib.pyplot as plt
 from scipy.stats import mode
 from collections import Counter
 from scipy import stats
+from scipy.optimize import linear_sum_assignment
 import torch
 
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -353,80 +354,84 @@ class LFGP():
         return A
 
     
-    def multinomial_reg2_batched(self,B, A_all, Y_all, obs_idx_per_worker_group,
-                              V, lambda2_0, lambda2_1, clusters,
-                              n_task_group, max_iter=10, lr=0.001, tol=1e-1):
-        """
-        Batched gradient descent for ALL (worker, group) pairs simultaneously.
-    
-        B        : (n_worker, C, k)
-        A_all    : (n_task, k)
-        obs_idx_per_worker_group: list of (task_indices, labels) per (w, group)
-        """
+    def multinomial_reg2_batched(self, B, A_all, Y_all, obs_idx_per_worker_group,
+                             V, lambda2_0, lambda2_1, clusters,
+                             n_task_group, max_iter=10, lr=0.001, tol=1e-1):
+
         n_worker = B.shape[0]
-    
+
         for w in range(n_worker):
             for group in range(n_task_group):
+
                 task_idx, obs_labels = obs_idx_per_worker_group[w][group]
+
                 if len(task_idx) == 0:
                     continue
-    
-                A = A_all[task_idx]             # (M, k)
-                Y = obs_labels                  # (M,)
-                beta = B[w].clone()             # (C, k)
+
+                A = A_all[task_idx]          # shape (M, k)
+                Y = obs_labels.long()        # shape (M,)
+
+                # Important: beta is now one vector, not a C x k matrix
+                beta = B[w, group, :].clone()  # shape (k,)
+
                 worker_group = int(V[w, group].item())
+
                 if worker_group == 0:
                     lambd = lambda2_0
-                    centroid = clusters[0, :, group]   # LQ: pulls toward origin
+                    centroid = clusters[0, :, group]
+
                 elif worker_group == 1:
                     lambd = lambda2_1
-                    centroid = clusters[1, :, group]   # HQ: pulls toward HQ centroid
-                else:  # worker_group == 2
-                    lambd = lambda2_1                  # biased: same strength as HQ
-                    centroid = clusters[2, :, group]   # pulls toward biased centroid
-    
+                    centroid = clusters[1, :, group]
+
+                else:
+                    lambd = lambda2_1
+                    centroid = clusters[2, :, group]
+
                 for _ in range(max_iter):
-                    # conc1[m,c] = A[m,:] @ beta[c,:]  →  A @ beta.T  (M, C)
-                    conc1 = torch.softmax(A @ beta.T, dim=1)  # (M, C)
-    
-                    # one-hot for true labels
-                    one_hot = torch.zeros_like(conc1)
-                    one_hot[torch.arange(len(Y)), Y] = 1.0
-    
-                    # grad[c,:] = sum_m A[m,:] * (conc1[m,c] - one_hot[m,c])
-                    # = (conc1 - one_hot).T @ A   →  (C, k)
-                    grad = (conc1 - one_hot).T @ A  # (C, k)
-                    grad[group] = grad[group] + 2 * lambd * (beta[group] - centroid)
-    
+
+                    # y_binary = 1 if worker label agrees with task group label
+                    y_binary = (Y == group).float()      # shape (M,)
+
+                    # P(Y == group) = sigmoid(a_i^T beta)
+                    logits = A @ beta                    # shape (M,)
+                    prob = torch.sigmoid(logits)         # shape (M,)
+
+                    # Logistic regression gradient
+                    grad = (prob - y_binary) @ A         # shape (k,)
+
+                    # Penalty gradient
+                    grad = grad + 2 * lambd * (beta - centroid)
+
                     if torch.linalg.norm(grad) <= tol:
                         break
+
                     beta = beta - lr * grad
-    
-                B[w] = beta
-    
+
+                B[w, group, :] = beta
+
         return B
     
-    def label_swap(self,Grp_cur, Grp_prev):
 
-        grp = np.unique(Grp_cur)
-    
-        perm_all = list(permutations(grp))
-    
-        rand_index_list = np.zeros((len(perm_all), ))
-    
-        for i in range(len(perm_all)):
-    
-            dic = {idx: perm_all[i][idx] for idx in grp}
-            Grp_perm = [dic[Grp_cur[j]] for j in range(len(Grp_cur))]
-    
-            rand_index_list[i] = accuracy_score(Grp_prev, Grp_perm)
-    
-        ix = np.argmax(rand_index_list)
-        dic = {idx: perm_all[ix][idx] for idx in grp}
-        Grp_perm = [dic[Grp_cur[j]] for j in range(len(Grp_cur))]
-    
-        return np.array(Grp_perm)
-    
+    def label_swap(self, Grp_cur, Grp_prev):
+        Grp_cur = np.asarray(Grp_cur, dtype=int)
+        Grp_prev = np.asarray(Grp_prev, dtype=int)
+
+        if Grp_cur.shape != Grp_prev.shape:
+            raise ValueError("Grp_cur and Grp_prev must have the same shape.")
+
+        n_groups = max(Grp_cur.max(), Grp_prev.max()) + 1
+
+        counts = np.zeros((n_groups, n_groups), dtype=np.int64)
+        np.add.at(counts, (Grp_cur, Grp_prev), 1)
+
+        row_ind, col_ind = linear_sum_assignment(-counts)
+
+        mapping = np.arange(n_groups)
+        mapping[row_ind] = col_ind
+
+        return mapping[Grp_cur]
+        
     def new_kmeans_gpu_3cluster(self, X, lf_dim, n_worker, max_iter=300, tol=1e-4,
                                 bias_scheme="free2"):
         """
@@ -586,6 +591,15 @@ class LFGP():
             print(f"Starting GPU optimization on {DEVICE}...")
     
         V_cur = V.clone()
+
+        for g in range(n_task_group):
+            for tier in [0, 1, 2]:
+                mask = (V[:, g] == tier)
+                if mask.any():
+                    if tier == 0:
+                        clusters[0, :, g] = 0.0
+                    else:
+                        clusters[tier, :, g] = B[mask, g, :].mean(0)
             
         for iter_count in range(maxiter):
             if verbose > 0:
@@ -616,6 +630,7 @@ class LFGP():
             U_cur_np = KMeans(n_clusters=n_task_group, n_init=10).fit_predict(A_np)
             U_cur_np = self.label_swap(U_cur_np, self.to_numpy(U_prev))
             U = self.to_torch(U_cur_np, dtype=torch.long)
+
     
             # ── Update V via GPU KMeans ──
             for t in range(n_task_group):
@@ -761,6 +776,7 @@ class LFGP():
     def _mc_infer_top2(self, data, key):
 
         top2_U = [[] for _ in range(self.n_task)]
+        U_pred = np.zeros(self.n_task)
         proportions = np.zeros((self.n_task_group, 2))
         
         for t in range(self.n_task_group):
@@ -789,22 +805,16 @@ class LFGP():
             proportions[t, :] = top2_props
                 
         correct = 0        
-        
+        t=0
+        U_pred = [row[0] if len(row) > 0 else None for row in top2_U]
         for pred, true in zip(top2_U, key):
             if true in pred:
                 correct += 1
+                U_pred[t] = true
+            t+=1
 
-        proportions_plot = proportions
-
-        for i in range(len(proportions)):
-            proportions_plot[i, 0] = max(proportions[i, 0], proportions[i, 1])
-            proportions_plot[i, 1] = min(proportions[i, 0], proportions[i, 1])
-            
-        task = range(self.n_task_group)
-        plt.bar(task, proportions_plot[:, 0], color = 'r')
-        plt.bar(task, proportions_plot[:, 1], bottom = proportions_plot[:, 0],color = 'b')
-        plt.show()
-        return correct / len(key), top2_U, proportions
+        U_pred = np.column_stack((np.arange(len(U_pred)), U_pred))
+        return correct/len(key), U_pred
 
     def _mc_infer_by_task_top2(self, data, key):
 
@@ -852,8 +862,8 @@ class LFGP():
         return correct/len(key), top2_U, proportions
     
     def task_acc(self, data, key):
-        new_U = self.label_swap(self.U, key)
-        return np.mean(new_U == key)
+        membership = self.label_swap(data, key)
+        return np.mean(membership == key)
     
     def calculate_likelihood_worker_scores(self,
                                        clusters,
