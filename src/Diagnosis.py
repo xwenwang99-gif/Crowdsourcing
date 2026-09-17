@@ -25,7 +25,13 @@ import pandas as pd
 from sklearn.metrics import (
     f1_score, confusion_matrix, precision_recall_fscore_support,
     adjusted_rand_score,
+<<<<<<< HEAD
 )
+=======
+    accuracy_score,
+)
+from scipy.optimize import linear_sum_assignment
+>>>>>>> 43c7f08 (Sep 17 merge)
 
 TIER_NAMES = ("LQ", "HQ", "Biased")   # index = tier code
 
@@ -95,6 +101,7 @@ def diagnose_runs(y_true_list, y_pred_list, n_classes=None,
 # ========================================================================== #
 #  PART B — worker-tier classification metrics (HQ / biased / LQ)
 # ========================================================================== #
+<<<<<<< HEAD
 def build_tier_vectors(worker_label, hq_workers_pred, biased_workers_pred,
                        pred_group, label, n_task_groups,
                        truth_argmax_to_tier=None):
@@ -140,6 +147,65 @@ def build_tier_vectors(worker_label, hq_workers_pred, biased_workers_pred,
             V_pred[biased_workers_pred[g], true_g] = 2
 
     return V_true.ravel().astype(int), V_pred.ravel().astype(int)
+=======
+def build_tier_vectors(
+    worker_label,
+    hq_workers_pred,
+    biased_workers_pred,
+    pred_group,
+    label,
+    n_task_groups,
+    truth_argmax_to_tier=None,
+):
+    n_worker = worker_label.shape[0]
+
+    V_true = np.argmax(
+        worker_label,
+        axis=2,
+    )
+
+    if truth_argmax_to_tier is not None:
+        V_true = np.vectorize(
+            truth_argmax_to_tier.get
+        )(V_true)
+
+    # predicted-group -> true-group one-to-one mapping
+    group_map = task_group_mapping(
+        pred_group,
+        label,
+        n_task_groups,
+    )
+
+    V_pred = np.zeros(
+        (n_worker, n_task_groups),
+        dtype=int,
+    )
+
+    for g_pred in range(n_task_groups):
+
+        g_true = group_map[g_pred]
+
+        # Skip unmatched group defensively
+        if g_true < 0:
+            continue
+
+        if hq_workers_pred[g_pred] is not None:
+            V_pred[
+                hq_workers_pred[g_pred],
+                g_true,
+            ] = 1
+
+        if biased_workers_pred[g_pred] is not None:
+            V_pred[
+                biased_workers_pred[g_pred],
+                g_true,
+            ] = 2
+
+    return (
+        V_true.ravel().astype(int),
+        V_pred.ravel().astype(int),
+    )
+>>>>>>> 43c7f08 (Sep 17 merge)
 
 
 def worker_diagnose(y_true_tier, y_pred_tier, tier_names=TIER_NAMES):
@@ -274,3 +340,156 @@ def build_worker_summary(agg):
     for metric, s in agg["summary"].items():           # accuracy, macro_f1, ari, biased_as_hq, hq_as_biased
         add("worker_overall", "Overall", metric, s)
     return pd.DataFrame(rows, columns=["section","name","metric","mean","sd","ci_low","ci_high","n"])
+<<<<<<< HEAD
+=======
+
+def print_spectral_worker_comparison(spectral, worker_label, pred_group, y_true):
+    """
+    Compare direct KMeans, two-stage Agg->Agg, and hybrid Agg->KMeans
+    worker-tier recovery on the same spectral embedding.
+    """
+
+    V_true = np.argmax(worker_label, axis=2).astype(int)
+    V_km = spectral["tier_kmeans"].astype(int)
+    V_agg = spectral["tier_agg"].astype(int)
+    V_hybrid = spectral["tier_hybrid"].astype(int)
+    tested = spectral["tested_mask"]
+
+    n_groups = V_true.shape[1]
+    group_map = task_group_mapping(pred_group, y_true, n_groups)
+
+    print("\n" + "=" * 125)
+    print("SPECTRAL WORKER GROUPING: KMEANS vs AGG->AGG vs AGG->KMEANS")
+    print("=" * 125)
+
+    print(
+        f"{'Pred->True':<10}"
+        f"{'KM Acc':>10}"
+        f"{'AGG Acc':>10}"
+        f"{'HYB Acc':>10}"
+        f"{'KM F1':>10}"
+        f"{'AGG F1':>10}"
+        f"{'HYB F1':>10}"
+        f"{'KM ARI':>10}"
+        f"{'AGG ARI':>10}"
+        f"{'HYB ARI':>10}"
+        f"{'N':>8}"
+    )
+    print("-" * 125)
+
+    all_true = []
+    km_all_pred = []
+    agg_all_pred = []
+    hyb_all_pred = []
+
+    for g_pred in range(n_groups):
+        g_true = group_map[g_pred]
+        mask = tested[:, g_pred]
+
+        if mask.sum() == 0:
+            continue
+
+        yt = V_true[mask, g_true]
+        ykm = V_km[mask, g_pred]
+        yagg = V_agg[mask, g_pred]
+        yhyb = V_hybrid[mask, g_pred]
+
+        km_acc = accuracy_score(yt, ykm)
+        agg_acc = accuracy_score(yt, yagg)
+        hyb_acc = accuracy_score(yt, yhyb)
+
+        km_f1 = f1_score(yt, ykm, labels=[0, 1, 2], average="macro", zero_division=0)
+        agg_f1 = f1_score(yt, yagg, labels=[0, 1, 2], average="macro", zero_division=0)
+        hyb_f1 = f1_score(yt, yhyb, labels=[0, 1, 2], average="macro", zero_division=0)
+
+        km_ari = adjusted_rand_score(yt, ykm)
+        agg_ari = adjusted_rand_score(yt, yagg)
+        hyb_ari = adjusted_rand_score(yt, yhyb)
+
+        print(
+            f"{g_pred}->{g_true:<7}"
+            f"{km_acc:>10.3f}"
+            f"{agg_acc:>10.3f}"
+            f"{hyb_acc:>10.3f}"
+            f"{km_f1:>10.3f}"
+            f"{agg_f1:>10.3f}"
+            f"{hyb_f1:>10.3f}"
+            f"{km_ari:>10.3f}"
+            f"{agg_ari:>10.3f}"
+            f"{hyb_ari:>10.3f}"
+            f"{mask.sum():>8d}"
+        )
+
+        all_true.append(yt)
+        km_all_pred.append(ykm)
+        agg_all_pred.append(yagg)
+        hyb_all_pred.append(yhyb)
+
+    if not all_true:
+        print("-" * 125)
+        print("No tested worker-group pairs.")
+        print("=" * 125)
+        return
+
+    yt = np.concatenate(all_true)
+    ykm = np.concatenate(km_all_pred)
+    yagg = np.concatenate(agg_all_pred)
+    yhyb = np.concatenate(hyb_all_pred)
+
+    km_acc = accuracy_score(yt, ykm)
+    agg_acc = accuracy_score(yt, yagg)
+    hyb_acc = accuracy_score(yt, yhyb)
+
+    km_f1 = f1_score(yt, ykm, labels=[0, 1, 2], average="macro", zero_division=0)
+    agg_f1 = f1_score(yt, yagg, labels=[0, 1, 2], average="macro", zero_division=0)
+    hyb_f1 = f1_score(yt, yhyb, labels=[0, 1, 2], average="macro", zero_division=0)
+
+    km_ari = adjusted_rand_score(yt, ykm)
+    agg_ari = adjusted_rand_score(yt, yagg)
+    hyb_ari = adjusted_rand_score(yt, yhyb)
+
+    print("-" * 125)
+    print(
+        f"{'Overall':<10}"
+        f"{km_acc:>10.3f}"
+        f"{agg_acc:>10.3f}"
+        f"{hyb_acc:>10.3f}"
+        f"{km_f1:>10.3f}"
+        f"{agg_f1:>10.3f}"
+        f"{hyb_f1:>10.3f}"
+        f"{km_ari:>10.3f}"
+        f"{agg_ari:>10.3f}"
+        f"{hyb_ari:>10.3f}"
+        f"{len(yt):>8d}"
+    )
+    print("=" * 125)
+    
+def task_group_mapping(pred_group, y_true, n_groups):
+    pred_group = np.asarray(pred_group).astype(int)
+    y_true = np.asarray(y_true).astype(int)
+
+    counts = np.zeros(
+        (n_groups, n_groups),
+        dtype=int,
+    )
+
+    # rows = predicted group
+    # cols = true group
+    np.add.at(
+        counts,
+        (pred_group, y_true),
+        1,
+    )
+
+    row_ind, col_ind = linear_sum_assignment(-counts)
+
+    mapping = np.full(
+        n_groups,
+        -1,
+        dtype=int,
+    )
+
+    mapping[row_ind] = col_ind
+
+    return mapping
+>>>>>>> 43c7f08 (Sep 17 merge)

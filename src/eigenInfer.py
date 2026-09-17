@@ -33,7 +33,17 @@ CHANGES FROM THE PREVIOUS VERSION
       old K = 2 grabbed a bulk eigenvector and folded pure noise into the
       embedding.
 
+<<<<<<< HEAD
 (iii) Tiering is a single 3-center KMeans on the K-dimensional embedding.
+=======
+# ------------------------------------------------------------------
+# 3. Worker tiering:
+#       (a) KMeans
+#       (b) Gaussian mixture model
+#
+# Both use exactly the same spectral embedding X.
+# ------------------------------------------------------------------
+>>>>>>> 43c7f08 (Sep 17 merge)
 
 REMAINING KNOWN ISSUES (not addressed here)
 -------------------------------------------
@@ -51,7 +61,12 @@ import warnings
 
 import numpy as np
 from scipy.stats import mode
+<<<<<<< HEAD
 from sklearn.cluster import KMeans
+=======
+from sklearn.cluster import KMeans, AgglomerativeClustering
+from sklearn.mixture import GaussianMixture
+>>>>>>> 43c7f08 (Sep 17 merge)
 
 LQ, HQ, BIASED = 0, 1, 2
 
@@ -103,6 +118,95 @@ def _within_cluster_agreement(agreement, idx):
     off = ~np.eye(idx.size, dtype=bool)
     return float(sub[off].mean())
 
+<<<<<<< HEAD
+=======
+def _two_stage_tiering(X, stage2="agg", eps=1e-9, n_init=20, random_state=0):
+    """
+    Stage 1: Agglomerative clustering on spectral norm -> LQ vs structured.
+    Stage 2: Agglomerative or KMeans on structured workers -> HQ vs biased.
+
+    Tier encoding: 0=LQ, 1=HQ, 2=biased.
+    """
+    X = np.asarray(X, dtype=float)
+    n = X.shape[0]
+    tier = np.full(n, LQ, dtype=int)
+
+    info = {
+        "stage1_labels": None,
+        "stage1_mean_norms": None,
+        "structured_idx": np.array([], dtype=int),
+        "stage2_labels": None,
+        "stage2_centers": None,
+        "stage2_center_norms": None,
+    }
+
+    if n < 3:
+        return tier, info
+
+    # ------------------------------------------------------------
+    # Stage 1: LQ vs structured using spectral norm
+    # ------------------------------------------------------------
+    norms = np.linalg.norm(X, axis=1)
+
+    if np.unique(np.round(norms / eps)).size < 2:
+        return tier, info
+
+    agg1 = AgglomerativeClustering(n_clusters=2, linkage="average", metric="euclidean")
+    stage1_labels = agg1.fit_predict(norms[:, None])
+
+    mean_norms = np.array([norms[stage1_labels == c].mean() for c in range(2)])
+    structured_cluster = np.argmax(mean_norms)
+    structured_idx = np.where(stage1_labels == structured_cluster)[0]
+
+    info["stage1_labels"] = stage1_labels
+    info["stage1_mean_norms"] = mean_norms
+    info["structured_idx"] = structured_idx
+
+    if structured_idx.size < 2:
+        return tier, info
+
+    # ------------------------------------------------------------
+    # Stage 2: HQ vs biased
+    # ------------------------------------------------------------
+    X_struct = X[structured_idx]
+
+    if np.unique(np.round(X_struct / eps), axis=0).shape[0] < 2:
+        tier[structured_idx] = HQ
+        return tier, info
+
+    if stage2 == "agg":
+        model = AgglomerativeClustering(n_clusters=2, linkage="average", metric="euclidean")
+        stage2_labels = model.fit_predict(X_struct)
+
+        centers = np.vstack([
+            X_struct[stage2_labels == c].mean(axis=0) for c in range(2)
+        ])
+
+    elif stage2 == "kmeans":
+        model = KMeans(n_clusters=2, n_init=n_init, random_state=random_state).fit(X_struct)
+        stage2_labels = model.labels_
+        centers = model.cluster_centers_
+
+    else:
+        raise ValueError("stage2 must be 'agg' or 'kmeans'.")
+        
+
+    center_norms = np.linalg.norm(centers, axis=1)
+
+    # Larger spectral signal = HQ
+    hq_cluster = np.argmax(center_norms)
+    biased_cluster = np.argmin(center_norms)
+
+    tier[structured_idx[stage2_labels == hq_cluster]] = HQ
+    tier[structured_idx[stage2_labels == biased_cluster]] = BIASED
+
+    info["stage2_labels"] = stage2_labels
+    info["stage2_centers"] = centers
+    info["stage2_center_norms"] = center_norms
+
+    return tier, info
+
+>>>>>>> 43c7f08 (Sep 17 merge)
 
 def spectral_worker_features_one_group(
     R_g,
@@ -223,6 +327,7 @@ def spectral_worker_features_one_group(
     # ------------------------------------------------------------------
     # 3. (iii) Tiers: one 3-center KMeans on the embedding.
     # ------------------------------------------------------------------
+<<<<<<< HEAD
     tested_mask = coverage >= min_coverage
     tested = np.where(tested_mask)[0]
 
@@ -285,18 +390,170 @@ def spectral_worker_features_one_group(
         "lq_idx": lq_idx,
         "tested_idx": tested,
         "tested_mask": tested_mask,
+=======
+    # ------------------------------------------------------------------
+    # 3. Worker tiering:
+    #       (a) KMeans
+    #       (b) Gaussian mixture model
+    #
+    # Both use exactly the same spectral embedding X.
+    # ------------------------------------------------------------------
+    
+    tested_mask = coverage >= min_coverage
+    tested = np.where(tested_mask)[0]
+    
+    # ================================================================
+    # Storage
+    # ================================================================
+    
+    tier_kmeans = np.full(n_worker, LQ, dtype=int)
+    tier_agg = np.full(n_worker, LQ, dtype=int)
+    tier_hybrid = np.full(n_worker, LQ, dtype=int)
+    
+    kmeans_centers = None
+    agg_info = None
+    hybrid_info = None
+    
+    
+    if (
+        tested.size >= 3
+        and np.linalg.norm(
+            spectral_embedding[tested]
+        ) > eps
+    ):
+    
+        X = spectral_embedding[tested, :]
+    
+        n_unique = np.unique(
+            np.round(X / eps),
+            axis=0,
+        ).shape[0]
+
+    
+        n_clusters = int(min(3, tested.size, n_unique,))
+
+        if n_clusters >= 2:
+    
+            # ========================================================
+            # A. KMEANS
+            # ========================================================
+    
+            km = KMeans(
+                n_clusters=n_clusters,
+                n_init=n_init,
+                random_state=random_state,
+            ).fit(X)
+    
+            kmeans_centers = (
+                km.cluster_centers_
+            )
+    
+            km_norms = np.linalg.norm(
+                kmeans_centers,
+                axis=1,
+            )
+    
+            # descending norm:
+            #     largest -> HQ
+            #     middle  -> biased
+            #     smallest -> LQ
+            km_rank = np.argsort(
+                km_norms
+            )[::-1]
+    
+            km_mapping = np.full(n_clusters,LQ,dtype=int,)
+    
+            # strongest center = HQ
+            km_mapping[km_rank[0]] = HQ
+    
+            if n_clusters == 3:
+    
+                # middle center = biased
+                km_mapping[
+                    km_rank[1]
+                ] = BIASED
+    
+            # smallest stays LQ
+            tier_kmeans[tested] = km_mapping[km.labels_]
+    
+           
+            # ================================================================
+            # C. TWO-STAGE AGGLOMERATIVE
+            # ================================================================
+            
+            # Two-stage Agg -> Agg
+            agg_labels, agg_info = _two_stage_tiering(
+                X, stage2="agg", eps=eps, n_init=n_init, random_state=random_state
+            )
+            tier_agg[tested] = agg_labels
+            
+            # Hybrid Agg -> KMeans
+            hybrid_labels, hybrid_info = _two_stage_tiering(
+                X, stage2="kmeans", eps=eps, n_init=n_init, random_state=random_state
+            )
+            tier_hybrid[tested] = hybrid_labels
+            
+            print("Agg vs Hybrid different workers:", np.sum(agg_labels != hybrid_labels))
+            print("Agg == Hybrid:", np.array_equal(agg_labels, hybrid_labels))
+    
+
+    # ---------------------------------------------------------------
+    # Backward compatibility:
+    # existing spectral pipeline continues using KMeans by default.
+    # ---------------------------------------------------------------
+    
+    tier_spectral = tier_kmeans.copy()
+    
+    hq_idx = np.where(tier_spectral == HQ)[0]
+    biased_idx = np.where(tier_spectral == BIASED)[0]
+    lq_idx = np.where(tier_spectral == LQ)[0]
+    cluster_centers = (kmeans_centers)
+ 
+    out = {
+        "spectral_embedding": spectral_embedding,
+    
+        # Old API -- remains KMeans
+        "tier_spectral": tier_spectral,
+    
+        # New side-by-side results
+        "tier_kmeans": tier_kmeans,
+        "tier_agg": tier_agg,
+        "tier_hybrid": tier_hybrid,
+        "agg_info": agg_info,
+        "hybrid_info": hybrid_info,
+    
+        "kmeans_centers": kmeans_centers,
+    
+        "hq_idx": hq_idx,
+        "biased_idx": biased_idx,
+        "lq_idx": lq_idx,
+    
+        "tested_idx": tested,
+        "tested_mask": tested_mask,
+    
+>>>>>>> 43c7f08 (Sep 17 merge)
         "eigvals": lam_raw,
         "eigvecs": V_raw,
         "eigvals_all": eigvals_all,
         "positive_eig_mask": pos_mask,
+<<<<<<< HEAD
         "cluster_centers": cluster_centers,
+=======
+    
+        # Keep this for old code
+        "cluster_centers": cluster_centers,
+    
+>>>>>>> 43c7f08 (Sep 17 merge)
         "coverage": coverage,
         "qhat": qhat,
         "p0": p0,
         "center_const": center_const,
         "K_eff": K_eff,
+<<<<<<< HEAD
         "within_agreement": within_agreement,
         "tier_order_ok": tier_order_ok,
+=======
+>>>>>>> 43c7f08 (Sep 17 merge)
     }
     if return_matrices:
         out["agreement"] = agreement
@@ -344,6 +601,12 @@ def extract_spectral_worker_features(
     coverage = np.zeros((n_worker, n_task_groups), dtype=int)
     tested_mask = np.zeros((n_worker, n_task_groups), dtype=bool)
     tier_spectral = np.zeros((n_worker, n_task_groups), dtype=int)
+<<<<<<< HEAD
+=======
+    tier_kmeans = np.zeros((n_worker, n_task_groups),dtype=int,)
+    tier_hybrid = np.zeros((n_worker, n_task_groups), dtype=int)   
+    tier_agg = np.zeros((n_worker, n_task_groups), dtype=int,)
+>>>>>>> 43c7f08 (Sep 17 merge)
 
     group_outputs = []
     for g in range(n_task_groups):
@@ -371,12 +634,36 @@ def extract_spectral_worker_features(
         coverage[:, g] = out_g["coverage"]
         tested_mask[:, g] = out_g["tested_mask"]
         tier_spectral[:, g] = out_g["tier_spectral"]
+<<<<<<< HEAD
+=======
+        tier_kmeans[:, g] = out_g["tier_kmeans"]
+        tier_agg[:, g] = out_g["tier_agg"]
+        tier_hybrid[:, g] = out_g["tier_hybrid"]
+        
+        # Workers identified as LQ in every task group.
+        # Require the worker to have actually been tested in every group so that
+        # "not enough information" is not accidentally interpreted as LQ.
+        all_tested = np.all(tested_mask, axis=1)
+        global_lq_mask = all_tested & np.all(tier_spectral == LQ, axis=1)
+        warm_worker_mask = ~global_lq_mask
+
+>>>>>>> 43c7f08 (Sep 17 merge)
 
     return {
         "embedding": embedding,
         "coverage": coverage,
         "tested_mask": tested_mask,
         "tier_spectral": tier_spectral,
+<<<<<<< HEAD
+=======
+        "tier_kmeans": tier_kmeans,
+        "tier_agg": tier_agg,
+        "tier_hybrid": tier_hybrid,
+    
+        "global_lq_mask": global_lq_mask,
+        "warm_worker_mask": warm_worker_mask,
+    
+>>>>>>> 43c7f08 (Sep 17 merge)
         "group_outputs": group_outputs,
         "tier_encoding": {"LQ": LQ, "HQ": HQ, "Biased": BIASED},
         "K": K_max,
@@ -487,4 +774,56 @@ def _hq_and_label_infer(
 
     if return_spectral:
         return task_accuracy, task_label_pred, hq_workers_pred, biased_workers_pred, spectral
+<<<<<<< HEAD
     return task_accuracy, task_label_pred, hq_workers_pred, biased_workers_pred
+=======
+    return task_accuracy, task_label_pred, hq_workers_pred, biased_workers_pred
+
+def spectral_tier_centers(spectral):
+    """Per-group tier centers in the SPECTRAL EMBEDDING space, (3, K, n_groups).
+
+    Diagnostics only. This is the eigenbasis of the agreement matrix, NOT the
+    LFGP latent-factor space -- do not pass this to _mc_fit.
+    Rows follow the LQ/HQ/BIASED convention; NaN where a tier was empty.
+    """
+    outs = spectral["group_outputs"]
+    K = spectral["K"]
+    centers = np.full((3, K, len(outs)), np.nan)
+    for g, out_g in enumerate(outs):
+        if out_g.get("empty") or out_g.get("cluster_centers") is None:
+            continue
+        emb, tier = out_g["spectral_embedding"], out_g["tier_spectral"]
+        for t in (LQ, HQ, BIASED):
+            m = tier == t
+            if m.any():
+                centers[t, :, g] = emb[m, :].mean(axis=0)
+    return centers
+
+
+def tier_centers_in_lf_space(B, tier, bias_scheme="free2", verbose=False):
+    """Tier centroids in the LFGP latent-factor space, shape (3, lf_dim, n_groups)
+    -- the layout _mc_fit expects for `clusters`.
+
+    B    : (n_worker, n_task_group, lf_dim)  worker latent factors
+    tier : (n_worker, n_task_group)          0=LQ, 1=HQ, 2=biased
+    """
+    B = np.asarray(B, dtype=float)
+    tier = np.asarray(tier, dtype=int)
+    n_worker, n_groups, lf_dim = B.shape
+    if tier.shape != (n_worker, n_groups):
+        raise ValueError(f"tier has shape {tier.shape}; expected {(n_worker, n_groups)}.")
+
+    clusters = np.zeros((3, lf_dim, n_groups))
+    for g in range(n_groups):
+        for t in (LQ, HQ, BIASED):
+            if t == LQ and bias_scheme == "free2":
+                continue                      # LQ pinned at the origin
+            m = tier[:, g] == t
+            if m.any():
+                clusters[t, :, g] = B[m, g, :].mean(axis=0)
+            elif verbose:
+                warnings.warn(f"group {g}: tier {t} empty; center left at origin "
+                              "(the degenerate-seed check will fall back).",
+                              RuntimeWarning)
+    return clusters
+>>>>>>> 43c7f08 (Sep 17 merge)

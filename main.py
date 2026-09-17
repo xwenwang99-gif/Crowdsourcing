@@ -21,16 +21,42 @@ import warnings
 import numpy as np
 import pandas as pd
 from scipy.stats import mode
+<<<<<<< HEAD
 from sklearn.metrics import balanced_accuracy_score
+=======
+from sklearn.metrics import (
+    balanced_accuracy_score,
+    accuracy_score,
+    f1_score,
+    adjusted_rand_score,
+)
+>>>>>>> 43c7f08 (Sep 17 merge)
 
 from src.lfgp_withoutO_biased import LFGP
 from src.GTIC import gtic
 from src.multispa import multispa_fit_predict
 from src.getdata_biased import getdata_biased
+<<<<<<< HEAD
 from src.eigenInfer import _hq_and_label_infer
 from src.Diagnosis import diagnose, summarize_runs,build_tier_vectors, worker_diagnose, worker_diagnose_runs, plot_tier_confusion,build_worker_summary
 from src.hq_vote_diagnostic import hq_vote_report
 from src.peera import peerA
+=======
+from src.eigenInfer import _hq_and_label_infer, tier_centers_in_lf_space
+from src.Diagnosis import (
+    diagnose, 
+    summarize_runs,
+    build_tier_vectors, 
+    worker_diagnose, 
+    worker_diagnose_runs, 
+    plot_tier_confusion,
+    build_worker_summary, 
+    print_spectral_worker_comparison,
+    task_group_mapping)
+from src.hq_vote_diagnostic import hq_vote_report
+from src.peera import peerA
+from src.hq_vote_diagnostic import hq_vote_report, plot_worker_lf_pca,true_tier_centers, plot_loss_trajectory
+>>>>>>> 43c7f08 (Sep 17 merge)
 
 
 warnings.filterwarnings("ignore")
@@ -38,16 +64,30 @@ warnings.filterwarnings("ignore")
 # --------------------------------------------------------------------------- #
 #  configuration
 # --------------------------------------------------------------------------- #
+<<<<<<< HEAD
 N_RUNS        = 10
 MAXITER       = 100
 N_TASK        = 500
 N_WORKER      = 500
 N_TASK_GROUPS = 10
+=======
+N_RUNS        = 5
+MAXITER       = 100
+N_TASK        = 200
+N_WORKER      = 400
+N_TASK_GROUPS = 5
+>>>>>>> 43c7f08 (Sep 17 merge)
 
 # which methods to run (replaces the eigen_ex / DS_ex / ... flags)
 ENABLE = {
     "Eigen_L2":   1,   # LFGP fit + spectral worker tiering
     "Likelihood": 1,   # same LFGP fit, labels via _mc_infer_by_task (no spectral step)
+<<<<<<< HEAD
+=======
+    "Likelihood2":  1,   # warm-restarted likelihood, init from spectral tiers
+    "Eigen_L2_v2":  1,
+    "Eigen_Oracle": 1,   # spectral tiering + label infer on the TRUE task grouping
+>>>>>>> 43c7f08 (Sep 17 merge)
     "DS":       1,
     "MV_HQ":    0,
     "MV":       0,
@@ -62,13 +102,23 @@ ENABLE = {
 #   "free2" — two free centers + one center fixed at the origin (LQ)
 #   "free3" — all three centers free
 BIAS_SCHEME = "free2"
+<<<<<<< HEAD
 DRAW_HQ_VOTES = 1
+=======
+DRAW_HQ_VOTES = 0
+OBJECTIVE = "label"
+REMOVE_GLOBAL_LQ = False
+>>>>>>> 43c7f08 (Sep 17 merge)
 
 METHODS = [m for m, on in ENABLE.items() if on]
 
 DATA_KW = dict(                       # getdata_biased arguments, kept in one place
     n_task=N_TASK, n_worker=N_WORKER, n_task_groups=N_TASK_GROUPS,
+<<<<<<< HEAD
     k=3, sigma=1.0, obs_prob=1, hq_ratio=1/3, bias_ratio=1/2,
+=======
+    k=3, sigma=1.0, obs_prob=1, hq_ratio=1/6, bias_ratio=1/4,
+>>>>>>> 43c7f08 (Sep 17 merge)
     delta=1, n_classes=N_TASK_GROUPS,
 )
 
@@ -129,20 +179,46 @@ def build_summary(metrics):
             })
     return pd.DataFrame.from_dict(rows, orient="index")
 
+<<<<<<< HEAD
+=======
+def spectral_to_V(hq_workers_pred, biased_workers_pred, n_worker, n_groups):
+    """Convert per-group HQ/biased index lists into an LFGP-style V matrix
+    (n_worker, n_groups), 0=LQ default, in PREDICTED-group coordinates."""
+    V_spec = np.zeros((n_worker, n_groups), dtype=int)
+    for g in range(n_groups):
+        if hq_workers_pred[g] is not None and len(hq_workers_pred[g]):
+            V_spec[np.asarray(hq_workers_pred[g], dtype=int), g] = 1
+        if biased_workers_pred[g] is not None and len(biased_workers_pred[g]):
+            V_spec[np.asarray(biased_workers_pred[g], dtype=int), g] = 2
+    return V_spec
+
+>>>>>>> 43c7f08 (Sep 17 merge)
 
 # --------------------------------------------------------------------------- #
 #  metric store:  metrics[method][metric] -> list over runs
 # --------------------------------------------------------------------------- #
 metrics = {m: {"accuracy": [], "macro_f1": [], "bal_acc": []} for m in METHODS}
 # the LFGP-based methods additionally report the task-grouping (cluster) accuracy
+<<<<<<< HEAD
 for _name in ("Eigen_L2", "Likelihood", "DS"):
+=======
+for _name in ("Eigen_L2", "Likelihood", "Likelihood2", "Eigen_L2_v2","Eigen_Oracle", "DS"):
+>>>>>>> 43c7f08 (Sep 17 merge)
     if _name in metrics:
         metrics[_name]["cluster_acc"] = []
 
 start = time.perf_counter()
+<<<<<<< HEAD
 
 # per-method worker-tier vectors:  tier_lists[method]["true"/"pred"] -> list over runs
 tier_lists = {name: {"true": [], "pred": []} for name in ("Eigen_L2", "Likelihood")}
+=======
+removed_worker_records = []
+
+# per-method worker-tier vectors:  tier_lists[method]["true"/"pred"] -> list over runs
+tier_lists = {name: {"true": [], "pred": []}
+              for name in ("Eigen_L2", "Likelihood", "Likelihood2", "Eigen_L2_v2", "Eigen_Oracle",)}
+>>>>>>> 43c7f08 (Sep 17 merge)
 for i in range(N_RUNS):
     np.random.seed(i)
 
@@ -161,14 +237,24 @@ for i in range(N_RUNS):
     if ENABLE["Eigen_L2"] or ENABLE["Likelihood"]:
         A, B, U, V, clusters_np = model._mc_fit(
             rating, key=y_true, scheme="ds", epsilon=1e-5,
+<<<<<<< HEAD
             maxiter=MAXITER, verbose=1, A=task_lf, B=worker_lf,
             bias_scheme=BIAS_SCHEME,
+=======
+            maxiter=MAXITER, verbose=1,
+            bias_scheme=BIAS_SCHEME,
+            objective=OBJECTIVE,
+>>>>>>> 43c7f08 (Sep 17 merge)
         )
         pred_group = U.astype(int)
         cluster_acc = model.task_acc(pred_group, y_true)
 
     if ENABLE["Likelihood"]:
+<<<<<<< HEAD
         # likelihood step only: majority vote of the fit's own HQ workers (V)
+=======
+        # likelihood step only: majority vote of the fit's own HQ workers (V) 
+>>>>>>> 43c7f08 (Sep 17 merge)
         hq_lik = [np.where(V[:, g] == 1)[0] for g in range(N_TASK_GROUPS)]
         biased_lik = [np.where(V[:, g] == 2)[0] for g in range(N_TASK_GROUPS)]
         yt_tier, yp_tier = build_tier_vectors(
@@ -178,16 +264,35 @@ for i in range(N_RUNS):
         tier_lists["Likelihood"]["pred"].append(yp_tier)
 
         #y_pred = model._mc_infer(rating )
+<<<<<<< HEAD
         y_pred = model._mc_infer_by_task(rating)
+=======
+        y_pred = model._mc_infer(rating)
+>>>>>>> 43c7f08 (Sep 17 merge)
         metrics["Likelihood"]["cluster_acc"].append(cluster_acc)
         produced["Likelihood"] = y_pred.astype(int)
 
     if ENABLE["Eigen_L2"]:        
+<<<<<<< HEAD
         _, y_pred, hq_workers_pred, biased_workers_pred = _hq_and_label_infer(
             pred_group, R_obs, y_true, worker_label,
             N_TASK, N_WORKER, N_TASK_GROUPS,
             LABEL_MODE="task", verbose=False,
             MIN_COVERAGE=5, return_spectral=False,
+=======
+        _, y_pred, hq_workers_pred, biased_workers_pred, spectral = _hq_and_label_infer(
+            pred_group, R_obs, y_true, worker_label,
+            N_TASK, N_WORKER, N_TASK_GROUPS,
+            LABEL_MODE="group", verbose=False,
+            MIN_COVERAGE=5, return_spectral=True,
+        )
+        
+        print_spectral_worker_comparison(
+            spectral,
+            worker_label,
+            pred_group,
+            y_true,
+>>>>>>> 43c7f08 (Sep 17 merge)
         )
 
         yt_tier, yp_tier = build_tier_vectors(
@@ -202,6 +307,136 @@ for i in range(N_RUNS):
 
         metrics["Eigen_L2"]["cluster_acc"].append(cluster_acc)
         produced["Eigen_L2"] = y_pred
+<<<<<<< HEAD
+=======
+        if ENABLE["Likelihood2"]:
+            V_spec = spectral_to_V(hq_workers_pred, biased_workers_pred,
+                                   N_WORKER, N_TASK_GROUPS)            
+            
+            clusters_spec = tier_centers_in_lf_space(B, V_spec, bias_scheme=BIAS_SCHEME)
+            if REMOVE_GLOBAL_LQ:
+                warm_worker_mask = spectral["warm_worker_mask"]
+            else:
+                warm_worker_mask = np.ones(N_WORKER, dtype=bool)
+            
+            removed_workers = np.where(~warm_worker_mask)[0]
+            n_removed = len(removed_workers)
+            
+            removed_worker_records.append({
+                "run": i,
+                "remove_global_lq": REMOVE_GLOBAL_LQ,
+                "n_removed": n_removed,
+                "n_kept": N_WORKER - n_removed,
+                "removed_ids": ",".join(map(str, removed_workers)),
+            })
+            
+            print(
+                f"Run {i}: global LQ removal={REMOVE_GLOBAL_LQ}, "
+                f"removed {n_removed}/{N_WORKER} workers "
+                f"({n_removed / N_WORKER:.1%})"
+            )
+
+            
+            model2 = LFGP(lf_dim=N_TASK_GROUPS, n_worker_group=N_TASK_GROUPS,
+                          lambda1=1, lambda2_0=1, lambda2_1=1)
+            model2._prescreen(rating)
+            A2, B2, U2, V2, clusters2 = model2._mc_fit(
+                rating, key=y_true, scheme="warm", epsilon=1e-5,
+                maxiter=MAXITER, verbose=0,
+                bias_scheme=BIAS_SCHEME,
+                objective=OBJECTIVE,
+                A_init=A, B_init=B,         # the first fit's grouping
+                U_init=pred_group,
+                V_init=V_spec,              # the SPECTRAL tiering
+                clusters_init=clusters_spec,
+                worker_active_mask=warm_worker_mask
+            )
+    
+            cluster_acc2 = model2.task_acc(U2.astype(int), y_true)
+            y_pred2 = model2._mc_infer_by_task(rating)
+
+            pred_group2 = U2.astype(int)
+
+            # Keep globally filtered LQ workers out of the second spectral pass.
+            R_obs_warm = R_obs.copy()
+            R_obs_warm[:, ~warm_worker_mask] = np.nan
+            
+            _, y_pred_e2, hq_workers_pred2, biased_workers_pred2 = _hq_and_label_infer(
+                pred_group2, R_obs_warm, y_true, worker_label,
+                N_TASK, N_WORKER, N_TASK_GROUPS,
+                LABEL_MODE="task", verbose=False,
+                MIN_COVERAGE=5, return_spectral=False,
+            )
+    
+            yt_tier, yp_tier = build_tier_vectors(
+                worker_label, hq_workers_pred2, biased_workers_pred2,
+                pred_group2, y_true, N_TASK_GROUPS)
+            
+            hq2 = [np.where(V2[:, g] == 1)[0] for g in range(N_TASK_GROUPS)]
+            bi2 = [np.where(V2[:, g] == 2)[0] for g in range(N_TASK_GROUPS)]
+            yt_lik2, yp_lik2 = build_tier_vectors(
+                worker_label, hq2, bi2, pred_group2, y_true, N_TASK_GROUPS)
+            tier_lists["Likelihood2"]["true"].append(yt_lik2)
+            tier_lists["Likelihood2"]["pred"].append(yp_lik2)
+            
+            # Eigen_L2_v2 keeps the spectral-pass vectors:
+            tier_lists["Eigen_L2_v2"]["true"].append(yt_tier)
+            tier_lists["Eigen_L2_v2"]["pred"].append(yp_tier)
+    
+            hq_vote_report(rating, pred_group2, hq_workers_pred2, N_TASK_GROUPS,
+                   OUT_DIR, f"Eigen_L2_v2_run{i}",
+                   y_true=y_true, draw=bool(DRAW_HQ_VOTES))
+    
+            metrics["Eigen_L2_v2"]["cluster_acc"].append(cluster_acc2)
+            produced["Eigen_L2_v2"] = y_pred_e2
+    
+            metrics["Likelihood2"]["cluster_acc"].append(cluster_acc2)
+            produced["Likelihood2"] = np.nan_to_num(y_pred2, nan=-1).astype(int)
+            
+            #B_true = np.transpose(worker_lf, (1, 0, 2))
+            clusters_true = true_tier_centers(worker_lf, np.argmax(worker_label, axis=2))
+            plot_worker_lf_pca(
+                [worker_lf, B, B2],
+                worker_tier_true=np.argmax(worker_label, axis=2),
+                clusters_list=[clusters_true, clusters_np, clusters2],
+                titles=("ground truth", "fit 1 (cold)", "fit 2 (warm)"),
+                path=os.path.join(OUT_DIR, f"worker_lf_pca_run{i}.png"),
+                draw=bool(DRAW_HQ_VOTES),
+            )
+            
+            plot_loss_trajectory(
+                model.loss_history, model2.loss_history,
+                acc_cold=model.acc_history, acc_warm=model2.acc_history,
+                path=os.path.join(OUT_DIR, f"loss_run{i}.png"),
+                draw=bool(DRAW_HQ_VOTES),
+                title=f"Objective trajectory (run {i})",
+            )
+    if ENABLE["Eigen_Oracle"]:
+        # Upper bound on the spectral step: feed the ground-truth task grouping
+        # so that any tiering/label error is attributable to the eigen-decomposition
+        # alone, not to clustering error propagated from the LFGP fit.
+        oracle_group = np.asarray(y_true, dtype=int)
+
+        _, y_pred_or, hq_or, biased_or = _hq_and_label_infer(
+            oracle_group, R_obs, y_true, worker_label,
+            N_TASK, N_WORKER, N_TASK_GROUPS,
+            LABEL_MODE="task", verbose=False,
+            MIN_COVERAGE=5, return_spectral=False,
+        )
+
+        yt_tier, yp_tier = build_tier_vectors(
+            worker_label, hq_or, biased_or,
+            oracle_group, y_true, N_TASK_GROUPS)
+        tier_lists["Eigen_Oracle"]["true"].append(yt_tier)
+        tier_lists["Eigen_Oracle"]["pred"].append(yp_tier)
+
+        hq_vote_report(rating, oracle_group, hq_or, N_TASK_GROUPS,
+                       OUT_DIR, f"Eigen_Oracle_run{i}",
+                       y_true=y_true, draw=bool(DRAW_HQ_VOTES))
+
+        metrics["Eigen_Oracle"]["cluster_acc"].append(1.0)   # oracle grouping
+        produced["Eigen_Oracle"] = y_pred_or
+>>>>>>> 43c7f08 (Sep 17 merge)
 
     if ENABLE["DS"]:
         y_pred = model._init_task_member_ds(rating)[:, 1]
@@ -249,6 +484,14 @@ for i in range(N_RUNS):
     # ---- persist after every run so a timeout can't lose finished runs ----
     save_json(os.path.join(OUT_DIR, "metrics_raw.json"), metrics)
     print(f"[run {i + 1}/{N_RUNS}] done; results saved to {OUT_DIR}")
+<<<<<<< HEAD
+=======
+    
+    pd.DataFrame(removed_worker_records).to_csv(
+        os.path.join(OUT_DIR, "removed_workers.csv"),
+        index=False
+    )
+>>>>>>> 43c7f08 (Sep 17 merge)
 
 # --------------------------------------------------------------------------- #
 #  summarize, print, and save
@@ -262,9 +505,17 @@ summary_df.to_csv(os.path.join(OUT_DIR, "summary.csv"))
 save_json(os.path.join(OUT_DIR, "summary.json"), summary_df.to_dict(orient="index"))
 save_json(os.path.join(OUT_DIR, "config.json"),
           {"run_id": RUN_ID, "n_runs": N_RUNS, "maxiter": MAXITER,
+<<<<<<< HEAD
            "enable": ENABLE, "bias_scheme": BIAS_SCHEME, "data_kw": DATA_KW})
 
 for _name in ("Eigen_L2", "Likelihood"):
+=======
+           "enable": ENABLE, "bias_scheme": BIAS_SCHEME,
+           "remove_global_lq": REMOVE_GLOBAL_LQ,
+           "data_kw": DATA_KW})
+
+for _name in ("Eigen_L2", "Likelihood", "Likelihood2", "Eigen_L2_v2", "Eigen_Oracle"):
+>>>>>>> 43c7f08 (Sep 17 merge)
     if not ENABLE[_name] or not tier_lists[_name]["true"]:
         continue
     worker_agg = worker_diagnose_runs(

@@ -400,4 +400,171 @@ def hq_vote_report(
             os.path.join(out_dir, f"hq_votes_{method_name}.csv"),
             block, fmt=fmt, delimiter=",", header=header, comments="",
         )
+<<<<<<< HEAD
     return dist
+=======
+    return dist
+# --------------------------------------------------------------------------- #
+#  Worker latent-factor visualization (PCA), fit-1 vs fit-2
+# --------------------------------------------------------------------------- #
+TIER_COLORS = {0: "#999999", 1: "#1f77b4", 2: "#d62728"}   # LQ grey, HQ blue, biased red
+TIER_NAMES_LF = {0: "LQ", 1: "HQ", 2: "biased"}
+
+
+def plot_worker_lf_pca(B_list, worker_tier_true, path=None, draw=True,
+                       clusters_list=None, titles=None, max_groups=None):
+    """
+    PCA visualization of worker latent factors, per task group, for any number
+    of factor sets (e.g. ground truth, cold fit, warm fit).
+
+    Parameters
+    ----------
+    B_list : sequence of (n_worker, n_groups, k) arrays
+        Factor sets to compare, one column each. Order them as you want the
+        columns, e.g. [B_true, B_fit1, B_fit2].
+    worker_tier_true : (n_worker, n_groups) int, 0=LQ 1=HQ 2=biased
+    clusters_list : optional sequence, same length as B_list; entries are
+        (3, k, n_groups) tier-center arrays or None (use None for the truth
+        column, which has no learned centers).
+    titles : sequence of str, same length as B_list.
+    """
+    if not draw:
+        return None
+
+    B_list = [np.asarray(B, dtype=float) for B in B_list]
+    shp = B_list[0].shape
+    if any(B.shape != shp for B in B_list):
+        raise ValueError(f"all B arrays must share shape {shp}; got "
+                         f"{[B.shape for B in B_list]}")
+    n_worker, n_groups, k = shp
+    ncol = len(B_list)
+    if titles is None:
+        titles = [f"set {j}" for j in range(ncol)]
+    if clusters_list is None:
+        clusters_list = [None] * ncol
+    wt = np.asarray(worker_tier_true).astype(int)
+
+    G = n_groups if max_groups is None else min(max_groups, n_groups)
+    fig, axes = plt.subplots(G, ncol, figsize=(5.2 * ncol, 3.4 * G),
+                             squeeze=False)
+
+    for g in range(G):
+        stacked = np.vstack([B[:, g, :] for B in B_list])
+        mu = stacked.mean(axis=0)
+        _, svals, Vt = np.linalg.svd(stacked - mu, full_matrices=False)
+        W = Vt[:2].T
+        var_expl = (svals[:2] ** 2).sum() / max((svals ** 2).sum(), 1e-12)
+
+        def proj(M):
+            return (np.asarray(M, dtype=float) - mu) @ W
+
+        for col in range(ncol):
+            ax = axes[g][col]
+            P = proj(B_list[col][:, g, :])
+            for tier in (0, 1, 2):
+                m = wt[:, g] == tier
+                if m.any():
+                    ax.scatter(P[m, 0], P[m, 1], s=8, alpha=0.55,
+                               c=TIER_COLORS[tier], label=TIER_NAMES_LF[tier],
+                               linewidths=0)
+            clus = clusters_list[col]
+            if clus is not None:
+                Pc = proj(np.asarray(clus, dtype=float)[:, :, g])
+                for tier in (0, 1, 2):
+                    ax.scatter(Pc[tier, 0], Pc[tier, 1], marker="*", s=180,
+                               c=TIER_COLORS[tier], edgecolors="black",
+                               linewidths=1.0, zorder=5)
+            ax.set_title(f"group {g} -- {titles[col]}  (2-PC var {var_expl*100:.0f}%)",
+                         fontsize=9)
+            ax.tick_params(labelsize=7)
+            if g == 0 and col == 0:
+                ax.legend(fontsize=7, frameon=False, loc="best")
+
+    fig.suptitle("Worker latent factors by task group (one shared PCA per row; "
+                 "stars = learned tier centers)", y=1.0, fontsize=11)
+    fig.tight_layout()
+    if path is not None:
+        d = os.path.dirname(path)
+        if d:
+            os.makedirs(d, exist_ok=True)
+        fig.savefig(path, dpi=150, bbox_inches="tight")
+    plt.close(fig)
+    return path
+
+def true_tier_centers(B_true, worker_tier_true):
+    """
+    Per-group, per-tier mean latent factors of the ground truth.
+
+    B_true : (n_worker, n_groups, k)
+    worker_tier_true : (n_worker, n_groups) int, 0=LQ 1=HQ 2=biased
+    Returns (3, k, n_groups), NaN for tiers empty in a group.
+    """
+    B_true = np.asarray(B_true, dtype=float)
+    wt = np.asarray(worker_tier_true).astype(int)
+    n_worker, n_groups, k = B_true.shape
+    centers = np.full((3, k, n_groups), np.nan)
+    for g in range(n_groups):
+        for tier in (0, 1, 2):
+            m = wt[:, g] == tier
+            if m.any():
+                centers[tier, :, g] = B_true[m, g, :].mean(axis=0)
+    return centers
+
+def plot_loss_trajectory(loss_cold, loss_warm=None, acc_cold=None, acc_warm=None,
+                         path=None, draw=True, title=None, logy=False):
+    """
+    One figure per repetition: objective value across the cold fit and the warm
+    restart, laid end to end. Both fits use the same objective (same data, same
+    lambdas), so the values are directly comparable.
+
+    acc_* are the per-iteration label accuracies (`acc_with_iter`); if given they
+    are overlaid on a right-hand axis. Note acc has one extra leading entry (the
+    pre-loop value), which is dropped for alignment with the loss.
+    """
+    if not draw:
+        return None
+
+    lc = np.asarray(loss_cold, dtype=float)
+    n1 = len(lc)
+    fig, ax = plt.subplots(figsize=(8, 4.2))
+
+    ax.plot(np.arange(1, n1 + 1), lc, "-o", ms=3, color="#1f77b4",
+            label="cold fit")
+    if loss_warm is not None and len(loss_warm):
+        lw = np.asarray(loss_warm, dtype=float)
+        ax.plot(np.arange(n1 + 1, n1 + len(lw) + 1), lw, "-o", ms=3,
+                color="#d62728", label="warm restart")
+        ax.axvline(n1 + 0.5, color="0.5", ls="--", lw=1)
+        ax.annotate("restart", xy=(n1 + 0.5, ax.get_ylim()[1]),
+                    xytext=(3, -10), textcoords="offset points",
+                    fontsize=8, color="0.35")
+
+    ax.set_xlabel("iteration (cold, then warm)")
+    ax.set_ylabel("objective  (neg. log-lik + penalties)")
+    if logy:
+        ax.set_yscale("log")
+
+    if acc_cold is not None:
+        ax2 = ax.twinx()
+        ac = np.asarray(acc_cold, dtype=float)[1:]          # drop pre-loop entry
+        ax2.plot(np.arange(1, len(ac) + 1), ac, ":", color="#1f77b4",
+                 alpha=0.7, label="acc (cold)")
+        if acc_warm is not None:
+            aw = np.asarray(acc_warm, dtype=float)[1:]
+            ax2.plot(np.arange(n1 + 1, n1 + len(aw) + 1), aw, ":",
+                     color="#d62728", alpha=0.7, label="acc (warm)")
+        ax2.set_ylabel("cluster accuracy")
+        ax2.set_ylim(0, 1)
+
+    ax.set_title(title or "Objective across cold fit and warm restart")
+    ax.legend(fontsize=8, frameon=False, loc="best")
+    fig.tight_layout()
+
+    if path is not None:
+        d = os.path.dirname(path)
+        if d:
+            os.makedirs(d, exist_ok=True)
+        fig.savefig(path, dpi=150, bbox_inches="tight")
+    plt.close(fig)
+    return path
+>>>>>>> 43c7f08 (Sep 17 merge)

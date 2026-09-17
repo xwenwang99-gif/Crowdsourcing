@@ -16,6 +16,10 @@ from collections import Counter
 from scipy import stats
 from scipy.optimize import linear_sum_assignment
 import torch
+<<<<<<< HEAD
+=======
+import torch.nn.functional as F
+>>>>>>> 43c7f08 (Sep 17 merge)
 
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 print(f"Using device: {DEVICE}")
@@ -141,7 +145,11 @@ class LFGP():
 
 
     
+<<<<<<< HEAD
     def _init_mc_params(self, data, task_lf, worker_lf, scheme):
+=======
+    def _init_mc_params(self, data, task_lf, worker_lf, scheme, U_init=None, V_init=None, clusters_init=None):
+>>>>>>> 43c7f08 (Sep 17 merge)
 
         # initialize model parameters for multicategory crowdsourcing
         # two initialization schemes are available: mv and random
@@ -153,12 +161,16 @@ class LFGP():
 
             U = task_member[:, 1]
             V = worker_member
+<<<<<<< HEAD
             '''         
             noise_scale = 0.1
 
             A = task_lf + np.random.normal(0, noise_scale, size=task_lf.shape)
             B = worker_lf + np.random.normal(0, noise_scale, size=worker_lf.shape)
             '''
+=======
+ 
+>>>>>>> 43c7f08 (Sep 17 merge)
             A = self._init_task_lf_gp(task_member)
             B = self._init_worker_lf_gp(worker_member)
             
@@ -177,6 +189,76 @@ class LFGP():
             A = self._init_task_lf_gp(task_member)
             B = self._init_worker_lf_gp(worker_member)
             
+<<<<<<< HEAD
+=======
+        elif scheme == "warm":
+            required = {
+                "A_init": task_lf,
+                "B_init": worker_lf,
+                "U_init": U_init,
+                "V_init": V_init,
+                "clusters_init": clusters_init,
+            }
+        
+            missing = [
+                name for name, value in required.items()
+                if value is None
+            ]
+        
+            if missing:
+                raise ValueError(
+                    "scheme='warm' requires: "
+                    + ", ".join(missing)
+                )
+            U = np.asarray(U_init).astype(int).copy()
+            V = np.asarray(V_init).astype(int).copy()
+            task_member = np.column_stack([np.arange(self.n_task), U]).astype(float)
+            A = task_lf.copy()
+            B = worker_lf.copy()
+            
+        elif scheme == "task_oracle":
+            if U_init is None:
+                raise ValueError("scheme='task_oracle' requires U_init.")
+            U = np.asarray(U_init).astype(int).copy()
+            task_member = np.column_stack([np.arange(self.n_task), U]).astype(float)
+            
+            V = self._init_worker_member_acc(data, task_member)
+  
+            A = self._init_task_lf_gp(task_member)
+            B = self._init_worker_lf_gp(V)
+            
+        elif scheme == "worker_oracle":
+            if V_init is None:
+                raise ValueError(
+                    "scheme='worker_oracle' requires V_init."
+                )
+        
+            # Task grouping is NOT oracle.
+            # Start tasks exactly as the ordinary likelihood fit does.
+            
+            V_init = np.argmax(
+               V_init,
+               axis=2,
+            ).astype(int)
+            task_member = self._init_task_member_ds(data)
+        
+            U = task_member[:, 1].astype(int)
+        
+            # Worker tiers ARE oracle.
+            V = np.asarray(V_init).astype(int).copy()
+        
+            if V.shape != (self.n_worker, self.n_task_group):
+                raise ValueError(
+                    f"V_init has shape {V.shape}; expected "
+                    f"{(self.n_worker, self.n_task_group)}."
+                )
+        
+            # Initialize latent factors using estimated U but oracle V.
+            A = self._init_task_lf_gp(task_member)
+            B = self._init_worker_lf_gp(V)
+
+            
+>>>>>>> 43c7f08 (Sep 17 merge)
                       
         U = U.astype(int)
         V = V.astype(int)
@@ -213,6 +295,7 @@ class LFGP():
         return lf
     
 
+<<<<<<< HEAD
     def _init_worker_lf_gp(self, member):
 
         # initialize model parameters (worker latent factors) using surrogate group information
@@ -271,6 +354,235 @@ class LFGP():
                 penalty2 += lambda2_1 * torch.sum((B[mask2, j, :] - center2) ** 2)
     
         return (loss + penalty1 + penalty2).item()
+=======
+    def _init_worker_lf_gp(self, member, scale=(0.0, 1.0, 2.0)):
+        """scale = (LQ, biased, HQ) centroid norms, matching the
+        smallest/middle/largest convention in new_kmeans_gpu_3cluster."""
+        lf = np.zeros((self.n_worker, self.n_task_group, self.lf_dim))
+        for t_group in range(self.n_task_group):
+            d = np.random.randn(2, self.lf_dim)
+            d /= np.linalg.norm(d, axis=1, keepdims=True)
+            centroids = {
+                0: np.zeros(self.lf_dim),        # LQ  -> origin (matches free2)
+                2: scale[1] * d[0],              # biased -> middle norm
+                1: scale[2] * d[1],              # HQ  -> largest norm
+            }
+            for i in range(self.n_worker):
+                c = centroids[int(member[i, t_group])]
+                lf[i, t_group, :] = np.random.multivariate_normal(c, 0.2 * np.eye(self.lf_dim))
+        return lf
+    
+    def worker_centers_from_V(self, B, V, n_task_group, bias_scheme="free2", worker_active_t=None):
+        if worker_active_t is None:
+            worker_active_t = torch.ones(B.shape[0], dtype=torch.bool, device=B.device)
+    
+        clusters = torch.zeros(3, self.lf_dim, n_task_group, device=B.device, dtype=B.dtype)
+    
+        for g in range(n_task_group):
+            for tier in [0, 1, 2]:
+                mask = (V[:, g] == tier) & worker_active_t
+    
+                if mask.any():
+                    if tier == 0 and bias_scheme == "free2":
+                        clusters[0, :, g] = 0.0
+                    else:
+                        clusters[tier, :, g] = B[mask, g, :].mean(0)
+    
+        return clusters
+    
+    def mc_loss_func_gpu(
+        self,
+        data_t,
+        task_id,
+        worker_id,
+        A,
+        B,
+        U,
+        V,
+        clusters,
+        lambda1,
+        lambda2_0,
+        lambda2_1,
+        lf_dim,
+        n_task_group,
+        objective="label",
+        dominant_labels=None,
+        worker_active_t=None
+    ):
+    
+        if objective not in ("label", "consistency"):
+            raise ValueError(
+                "objective must be 'label' or 'consistency'"
+            )
+            
+        if worker_active_t is None:
+            worker_active_t = torch.ones(B.shape[0], dtype=torch.bool, device=B.device)
+    
+        labels = data_t[:, 2].long()
+        A_obs = A[task_id]
+        
+    
+        # ==================================================
+        # Likelihood
+        # ==================================================
+    
+        if objective == "label":
+    
+            # Original exact-label softmax likelihood
+            B_obs = B[worker_id]
+    
+            logits = torch.einsum(
+                "rk,rck->rc",
+                A_obs,
+                B_obs,
+            )
+    
+            log_probs = torch.log_softmax(
+                logits,
+                dim=1,
+            )
+    
+            loss = -log_probs[
+                torch.arange(
+                    len(labels),
+                    device=DEVICE,
+                ),
+                labels,
+            ].sum()
+    
+        else:
+    
+            # Current group for each observation
+            groups = U[task_id]
+    
+            # B_jg corresponding to task's current group
+            B_obs = B[
+                worker_id,
+                groups,
+                :,
+            ]
+    
+            # m_jg
+            dominant = dominant_labels[
+                worker_id,
+                groups,
+            ]
+    
+            valid = dominant >= 0
+    
+            logits = torch.sum(
+                A_obs[valid]
+                * B_obs[valid],
+                dim=1,
+            )
+    
+            z = (
+                labels[valid]
+                == dominant[valid]
+            ).float()
+    
+            loss = (
+                F.binary_cross_entropy_with_logits(
+                    logits,
+                    z,
+                    reduction="sum",
+                )
+            )
+    
+        # ==================================================
+        # Penalty 1: task grouping
+        # ==================================================
+    
+        penalty1 = torch.tensor(
+            0.0,
+            device=DEVICE,
+        )
+    
+        for g in torch.unique(U):
+    
+            mask = U == g
+            centroid = A[mask].mean(0)
+    
+            penalty1 += (
+                lambda1
+                * torch.sum(
+                    (
+                        A[mask]
+                        - centroid
+                    ) ** 2
+                )
+            )
+    
+        # ==================================================
+        # Penalty 2: worker grouping
+        # ==================================================
+    
+        penalty2 = torch.tensor(
+            0.0,
+            device=DEVICE,
+        )
+    
+        for j in range(n_task_group):
+    
+            mask0 = (V[:, j] == 0) & worker_active_t
+            mask1 = (V[:, j] == 1) & worker_active_t
+            mask2 = (V[:, j] == 2) & worker_active_t
+    
+            if mask0.any():
+    
+                center0 = clusters[ 0,:,j,] 
+                penalty2 += (
+                    lambda2_0
+                    * torch.sum(
+                        (
+                            B[mask0, j, :]
+                            - center0
+                        ) ** 2
+                    )
+                )
+    
+            if mask1.any():
+    
+                center1 = clusters[
+                    1,
+                    :,
+                    j,
+                ]
+    
+                penalty2 += (
+                    lambda2_1
+                    * torch.sum(
+                        (
+                            B[mask1, j, :]
+                            - center1
+                        ) ** 2
+                    )
+                )
+    
+            if mask2.any():
+    
+                center2 = clusters[
+                    2,
+                    :,
+                    j,
+                ]
+    
+                penalty2 += (
+                    lambda2_1
+                    * torch.sum(
+                        (
+                            B[mask2, j, :]
+                            - center2
+                        ) ** 2
+                    )
+                )
+    
+        return (
+            loss
+            + penalty1
+            + penalty2
+        ).item()
+>>>>>>> 43c7f08 (Sep 17 merge)
     
     def comp_centroid_gpu(self,A, B, U, V, n_task_group):
         """
@@ -300,6 +612,7 @@ class LFGP():
         return Centroid_A, Centroid_B
 
     
+<<<<<<< HEAD
     def multinomial_reg1_batched(self,A, B_all, Y_all, obs_idx_per_task,
                               lambd, Alpha, max_iter=10, lr=0.001, tol=1e-1):
         """
@@ -317,10 +630,44 @@ class LFGP():
         # of observations — which they generally don't. We therefore vectorize
         # WITHIN each task (eliminate the inner n/c loops) and call torch.vmap
         # or a simple per-task loop that is fast because all ops are tensor ops.
+=======
+    def multinomial_reg1_batched(
+        self,
+        A,
+        B_all,
+        Y_all,
+        obs_idx_per_task,
+        lambd,
+        Alpha,
+        max_iter=10,
+        lr=0.001,
+        tol=1e-1,
+        objective="label",
+        U=None,
+        dominant_labels=None,
+    ):
+        """
+        Update task factors A.
+    
+        objective="label":
+            Original multinomial softmax objective.
+    
+        objective="consistency":
+            Bernoulli objective based on whether each worker's
+            response equals that worker's dominant response
+            for the task's current group.
+        """
+    
+        if objective not in ("label", "consistency"):
+            raise ValueError(
+                "objective must be 'label' or 'consistency'"
+            )
+>>>>>>> 43c7f08 (Sep 17 merge)
     
         n_task, k = A.shape
     
         for t in range(n_task):
+<<<<<<< HEAD
             worker_idx, obs_labels = obs_idx_per_task[t]
             if len(worker_idx) == 0:
                 continue
@@ -348,12 +695,129 @@ class LFGP():
                 if torch.linalg.norm(grad) <= tol:
                     break
                 beta = beta - lr * grad
+=======
+    
+            worker_idx, obs_labels = obs_idx_per_task[t]
+    
+            if len(worker_idx) == 0:
+                continue
+    
+            Y = obs_labels.long()
+            beta = A[t].clone()
+            centroid = Alpha[t]
+    
+            # ==================================================
+            # OLD OBJECTIVE
+            # ==================================================
+            if objective == "label":
+    
+                B = B_all[worker_idx]       # (N, C, k)
+    
+                for _ in range(max_iter):
+    
+                    logits = B @ beta
+                    prob = torch.softmax(
+                        logits,
+                        dim=1,
+                    )
+    
+                    B_true = B[
+                        torch.arange(
+                            len(Y),
+                            device=Y.device,
+                        ),
+                        Y,
+                    ]
+    
+                    B_weighted = torch.einsum(
+                        "nc,nck->k",
+                        prob,
+                        B,
+                    )
+    
+                    grad = (
+                        B_weighted
+                        - B_true.sum(0)
+                        + 2 * lambd
+                        * (beta - centroid)
+                    )
+    
+                    if torch.linalg.norm(grad) <= tol:
+                        break
+    
+                    beta = beta - lr * grad
+    
+            # ==================================================
+            # NEW CONSISTENCY OBJECTIVE
+            # ==================================================
+            else:
+    
+                if U is None:
+                    raise ValueError(
+                        "consistency objective requires U"
+                    )
+    
+                if dominant_labels is None:
+                    raise ValueError(
+                        "consistency objective requires "
+                        "dominant_labels"
+                    )
+    
+                # Current task group
+                g = int(U[t].item())
+    
+                # Worker factor for THIS task group
+                B_group = B_all[
+                    worker_idx,
+                    g,
+                    :,
+                ]                           # (N, k)
+    
+                # m_{jg}
+                dominant = dominant_labels[
+                    worker_idx,
+                    g,
+                ]
+    
+                valid = dominant >= 0
+    
+                if not valid.any():
+                    continue
+    
+                B_group = B_group[valid]
+                Y_valid = Y[valid]
+                dominant = dominant[valid]
+    
+                # z_ij = 1 if response matches worker's
+                # dominant response within this group
+                z = (
+                    Y_valid == dominant
+                ).float()
+    
+                for _ in range(max_iter):
+    
+                    logits = B_group @ beta
+                    prob = torch.sigmoid(logits)
+    
+                    # BCE logistic gradient wrt A_i
+                    grad = (
+                        (prob - z) @ B_group
+                        + 2 * lambd
+                        * (beta - centroid)
+                    )
+    
+                    if torch.linalg.norm(grad) <= tol:
+                        break
+    
+                    beta = beta - lr * grad
+>>>>>>> 43c7f08 (Sep 17 merge)
     
             A[t] = beta
     
         return A
 
     
+<<<<<<< HEAD
     def multinomial_reg2_batched(self, B, A_all, Y_all, obs_idx_per_worker_group,
                              V, lambda2_0, lambda2_1, clusters,
                              n_task_group, max_iter=10, lr=0.001, tol=1e-1):
@@ -412,6 +876,157 @@ class LFGP():
 
         return B
     
+=======
+    def multinomial_reg2_batched(
+        self,
+        B,
+        A_all,
+        Y_all,
+        obs_idx_per_worker_group,
+        V,
+        lambda2_0,
+        lambda2_1,
+        clusters,
+        n_task_group,
+        max_iter=10,
+        lr=0.001,
+        tol=1e-1,
+        objective="label",
+        dominant_labels=None,
+    ):
+        """
+        Update worker factors B.
+    
+        objective="label":
+            z = I(response == task-group label)
+    
+        objective="consistency":
+            z = I(response == worker's dominant response
+                  within that task group)
+        """
+    
+        if objective not in ("label", "consistency"):
+            raise ValueError(
+                "objective must be 'label' or 'consistency'"
+            )
+    
+        n_worker = B.shape[0]
+    
+        for w in range(n_worker):
+    
+            for group in range(n_task_group):
+    
+                task_idx, obs_labels = (
+                    obs_idx_per_worker_group[w][group]
+                )
+    
+                if len(task_idx) == 0:
+                    continue
+    
+                A = A_all[task_idx]
+                Y = obs_labels.long()
+    
+                beta = B[
+                    w,
+                    group,
+                    :,
+                ].clone()
+    
+                worker_group = int(
+                    V[w, group].item()
+                )
+    
+                if worker_group == 0:
+    
+                    lambd = lambda2_0
+                    centroid = clusters[
+                        0,
+                        :,
+                        group,
+                    ]
+    
+                elif worker_group == 1:
+    
+                    lambd = lambda2_1
+                    centroid = clusters[
+                        1,
+                        :,
+                        group,
+                    ]
+    
+                else:
+    
+                    lambd = lambda2_1
+                    centroid = clusters[
+                        2,
+                        :,
+                        group,
+                    ]
+    
+                # ==============================================
+                # Define binary response
+                # ==============================================
+    
+                if objective == "label":
+    
+                    # OLD:
+                    # worker agrees with group label
+                    z = (
+                        Y == group
+                    ).float()
+    
+                else:
+    
+                    if dominant_labels is None:
+                        raise ValueError(
+                            "consistency objective requires "
+                            "dominant_labels"
+                        )
+    
+                    dominant = int(
+                        dominant_labels[
+                            w,
+                            group,
+                        ].item()
+                    )
+    
+                    if dominant < 0:
+                        continue
+    
+                    # NEW:
+                    # worker follows own dominant pattern
+                    z = (
+                        Y == dominant
+                    ).float()
+    
+                # ==============================================
+                # Logistic update
+                # ==============================================
+    
+                for _ in range(max_iter):
+    
+                    logits = A @ beta
+                    prob = torch.sigmoid(logits)
+    
+                    grad = (
+                        (prob - z) @ A
+                        + 2 * lambd
+                        * (beta - centroid)
+                    )
+    
+                    if torch.linalg.norm(grad) <= tol:
+                        break
+    
+                    beta = beta - lr * grad
+    
+                B[
+                    w,
+                    group,
+                    :,
+                ] = beta
+    
+        return B
+>>>>>>> 43c7f08 (Sep 17 merge)
 
     def label_swap(self, Grp_cur, Grp_prev):
         Grp_cur = np.asarray(Grp_cur, dtype=int)
@@ -433,6 +1048,7 @@ class LFGP():
         return mapping[Grp_cur]
         
     def new_kmeans_gpu_3cluster(self, X, lf_dim, n_worker, max_iter=300, tol=1e-4,
+<<<<<<< HEAD
                                 bias_scheme="free2"):
         """
         3-cluster KMeans matching the worker-group penalty. In both schemes
@@ -525,6 +1141,175 @@ class LFGP():
     
     def _mc_fit(self, data, key, scheme="mv", maxiter=50, epsilon=1e-5, verbose=0, A = None, B = None,
                 bias_scheme="free2"):
+=======
+                            bias_scheme="free2", clusters_init=None):
+        if clusters_init is not None:
+            centers = clusters_init.clone().to(device=DEVICE, dtype=X.dtype)
+            if tuple(centers.shape) != (3, lf_dim):
+                raise ValueError(f"clusters_init has shape {tuple(centers.shape)}; "
+                                 f"expected {(3, lf_dim)}.")
+            if bias_scheme == "free2":
+                centers[0] = 0.0
+    
+        if clusters_init is None:
+            centers = torch.zeros(3, lf_dim, device=DEVICE)
+            norms = torch.linalg.norm(X, dim=1)
+            centers[1] = X[torch.argmax(norms)]
+            proj = (X @ centers[1]) / (torch.linalg.norm(centers[1]) ** 2 + 1e-12)
+            X_orth = X - proj.unsqueeze(1) * centers[1].unsqueeze(0)
+            centers[2] = X[torch.argmax(torch.linalg.norm(X_orth, dim=1))]
+            if bias_scheme == "free3":
+                centers[0] = X[torch.argmin(norms)]
+    
+        # ── Lloyd loop: runs in BOTH cases ──
+        labels = torch.zeros(n_worker, dtype=torch.long, device=DEVICE)
+        for _ in range(max_iter):
+            diff = X.unsqueeze(1) - centers.unsqueeze(0)
+            new_labels = torch.argmin(torch.linalg.norm(diff, dim=2), dim=1)
+    
+            new_centers = centers.clone()
+            tiers = (0, 1, 2) if bias_scheme == "free3" else (1, 2)
+            for tier in tiers:
+                pts = X[new_labels == tier]
+                if len(pts) > 0:
+                    new_centers[tier] = pts.mean(0)
+    
+            converged = bool(torch.all(torch.abs(new_centers - centers) < tol))
+            centers, labels = new_centers, new_labels
+            if converged:
+                break
+    
+        return labels, centers
+
+    def relabel_worker_clusters_signed(
+        self,
+        labels,
+        centers,
+        task_direction,
+    ):
+        """
+        Relabel three worker clusters as:
+            0 = LQ
+            1 = HQ
+            2 = biased
+    
+        HQ and biased are distinguished using signed alignment with the
+        task-group direction, rather than center norm alone.
+        """
+        task_direction = task_direction / (
+            torch.linalg.norm(task_direction) + 1e-12
+        )
+    
+        center_norms = torch.linalg.norm(centers, dim=1)
+    
+        # LQ should be closest to the origin
+        lq_old = int(torch.argmin(center_norms).item())
+    
+        remaining = [
+            c for c in range(3)
+            if c != lq_old
+        ]
+    
+        # Signed projection onto the task-group direction
+        signed_scores = centers @ task_direction
+    
+        # Most positively aligned cluster = HQ
+        hq_old = max(
+            remaining,
+            key=lambda c: float(signed_scores[c].item()),
+        )
+    
+        # The other structured cluster = biased
+        biased_old = next(
+            c for c in remaining
+            if c != hq_old
+        )
+    
+        # old cluster ID -> semantic tier ID
+        mapping = torch.empty(
+            3,
+            dtype=torch.long,
+            device=labels.device,
+        )
+    
+        mapping[lq_old] = 0
+        mapping[hq_old] = 1
+        mapping[biased_old] = 2
+    
+        labels_new = mapping[labels.long()]
+    
+        centers_new = torch.empty_like(centers)
+        centers_new[0] = centers[lq_old]
+        centers_new[1] = centers[hq_old]
+        centers_new[2] = centers[biased_old]
+    
+        return labels_new, centers_new
+    
+    def dominant_labels_gpu(
+        self,
+        data_t,
+        task_idx_t,
+        worker_idx_t,
+        U,
+        n_task_group,
+    ):
+        """
+        dominant[j, g] = m_{jg}
+            = most frequent label given by worker j
+              on tasks currently assigned to group g.
+    
+        Returns
+        -------
+        dominant : (n_worker, n_task_group) long tensor
+            -1 means no observations for that worker/group pair.
+    
+        counts : (n_worker, n_task_group, n_task_group)
+            Raw response counts.
+        """
+    
+        labels = data_t[:, 2].long()
+    
+        # Current group of every observed task
+        groups = U[task_idx_t]
+    
+        # Flatten (worker, group, label) into one index
+        flat_idx = (
+            (worker_idx_t * n_task_group + groups)
+            * n_task_group
+            + labels
+        )
+    
+        counts = torch.bincount(
+            flat_idx,
+            minlength=(
+                self.n_worker
+                * n_task_group
+                * n_task_group
+            ),
+        )
+    
+        counts = counts.reshape(
+            self.n_worker,
+            n_task_group,
+            n_task_group,
+        )
+    
+        dominant = torch.argmax(
+            counts,
+            dim=2,
+        )
+    
+        # Worker/group combinations with no observations
+        total = counts.sum(dim=2)
+        dominant[total == 0] = -1
+    
+        return dominant, counts
+
+  
+    
+    def _mc_fit(self, data, key, scheme="mv", maxiter=50, epsilon=1e-5, verbose=0, 
+                bias_scheme="free2", objective="label", A_init = None, B_init = None, U_init=None, V_init=None, clusters_init=None, worker_active_mask=None):
+>>>>>>> 43c7f08 (Sep 17 merge)
         """
         GPU-accelerated drop-in replacement for _mc_fit.
         self must have: A, B, U, V, lf_dim, n_task, n_worker, n_task_group,
@@ -536,7 +1321,29 @@ class LFGP():
         center-norm magnitude (smallest=LQ, largest=HQ, middle=biased).
         """
         acc_with_iter = []
+<<<<<<< HEAD
         self._init_mc_params(data, A, B, scheme=scheme)
+=======
+        self._init_mc_params(data, A_init, B_init, scheme=scheme, U_init=U_init, V_init=V_init, clusters_init=clusters_init)
+        
+        if worker_active_mask is None:
+            worker_active_mask = np.ones(self.n_worker, dtype=bool)
+        else:
+            worker_active_mask = np.asarray(worker_active_mask, dtype=bool)
+        
+            if worker_active_mask.shape != (self.n_worker,):
+                raise ValueError(
+                    f"worker_active_mask has shape {worker_active_mask.shape}; "
+                    f"expected {(self.n_worker,)}."
+                )
+
+        # Removed workers are permanently treated as LQ during this fit.
+        self.V[~worker_active_mask, :] = 0
+        
+        # Since free2 fixes the LQ center at zero, keep removed workers at the origin.
+        if bias_scheme == "free2":
+            self.B[~worker_active_mask, :, :] = 0.0
+>>>>>>> 43c7f08 (Sep 17 merge)
         
         self.U = self.U.astype(int)
         self.V = self.V.astype(int)
@@ -551,6 +1358,7 @@ class LFGP():
         V = self.to_torch(self.V, dtype=torch.long)   # (n_worker, C)
     
         data_np = data
+<<<<<<< HEAD
         data_t = self.to_torch(data)       # (n_record, 3)
     
         task_ids_np, task_idx_np = np.unique(data[:, 0], return_inverse=True)
@@ -561,12 +1369,34 @@ class LFGP():
     
         n_task_group = self.n_task_group
         lf_dim = self.lf_dim
+=======
+
+        task_ids_np, task_idx_np = np.unique(data_np[:, 0], return_inverse=True)
+        worker_ids_np, worker_idx_np = np.unique(data_np[:, 1], return_inverse=True)
+        
+        record_active = worker_active_mask[worker_idx_np]
+        
+        # Loss is evaluated only on retained workers.
+        data_t = self.to_torch(data_np[record_active])
+        task_idx_t = self.to_torch(task_idx_np[record_active], dtype=torch.long)
+        worker_idx_t = self.to_torch(worker_idx_np[record_active], dtype=torch.long)
+    
+        n_task_group = self.n_task_group
+        lf_dim = self.lf_dim
+        
+        worker_active_t = self.to_torch(worker_active_mask, dtype=torch.bool)
+        active_idx = torch.where(worker_active_t)[0]
+>>>>>>> 43c7f08 (Sep 17 merge)
     
         # ── Precompute observation indices (done once, on CPU for indexing) ──
         # obs_idx_per_task[t] = (worker_indices_tensor, labels_tensor)
         obs_idx_per_task = []
         for t in range(self.n_task):
+<<<<<<< HEAD
             mask = (data_np[:, 0] == task_ids_np[t])
+=======
+            mask = (data_np[:, 0] == task_ids_np[t]) & record_active
+>>>>>>> 43c7f08 (Sep 17 merge)
             w_idx = self.to_torch(worker_idx_np[mask], dtype=torch.long)
             labels = self.to_torch(data_np[mask, 2].astype(int), dtype=torch.long)
             obs_idx_per_task.append((w_idx, labels))
@@ -576,14 +1406,32 @@ class LFGP():
         for w in range(self.n_worker):
             worker_groups = []
             for group in range(n_task_group):
+<<<<<<< HEAD
                 mask = ((data_np[:, 1] == worker_ids_np[w]) &
                         (U[data_np[:, 0].astype(int)].cpu().numpy() == group))
+=======
+                mask = (
+                    (data_np[:, 1] == worker_ids_np[w]) &
+                    record_active &
+                    (U[data_np[:, 0].astype(int)].cpu().numpy() == group)
+                )
+>>>>>>> 43c7f08 (Sep 17 merge)
                 t_idx = self.to_torch(task_idx_np[mask], dtype=torch.long)
                 labels = self.to_torch(data_np[mask, 2].astype(int), dtype=torch.long)
                 worker_groups.append((t_idx, labels))
             obs_idx_per_worker_group.append(worker_groups)
     
+<<<<<<< HEAD
         clusters = torch.zeros(3, lf_dim, n_task_group, device=DEVICE)
+=======
+        clusters = self.worker_centers_from_V(
+            B,
+            V,
+            n_task_group,
+            bias_scheme=bias_scheme,
+            worker_active_t = worker_active_t
+        )
+>>>>>>> 43c7f08 (Sep 17 merge)
         loss_prev = float("inf")
         loss_history = []
     
@@ -591,6 +1439,7 @@ class LFGP():
             print(f"Starting GPU optimization on {DEVICE}...")
     
         V_cur = V.clone()
+<<<<<<< HEAD
 
         for g in range(n_task_group):
             for tier in [0, 1, 2]:
@@ -600,6 +1449,9 @@ class LFGP():
                         clusters[0, :, g] = 0.0
                     else:
                         clusters[tier, :, g] = B[mask, g, :].mean(0)
+=======
+        
+>>>>>>> 43c7f08 (Sep 17 merge)
             
         for iter_count in range(maxiter):
             if verbose > 0:
@@ -609,18 +1461,56 @@ class LFGP():
             B_prev = B.clone()
             U_prev = U.clone()
             V_prev = V.clone()
+<<<<<<< HEAD
     
             Alpha, _ = self.comp_centroid_gpu(A_prev, B_prev, U_prev, V_prev, n_task_group)
+=======
+            
+            # =======================================================
+            # Worker-specific dominant response m_{jg}
+            # under the CURRENT task grouping
+            # =======================================================
+            
+            dominant_labels = None
+            
+            if objective == "consistency":
+            
+                dominant_labels, _ = (
+                    self.dominant_labels_gpu(
+                        data_t,
+                        task_idx_t,
+                        worker_idx_t,
+                        U_prev,
+                        n_task_group,
+                    )
+                )
+    
+            Alpha, _ = self.comp_centroid_gpu(A_prev, B_prev, U_prev, V_prev, n_task_group)
+            
+            #lambda1 = min(0.1*iter_count, self.lambda1)
+            #lambda2_1 = min(0.1*iter_count, self.lambda2_1)
+            #lambda2_0 = min(0.1*iter_count, self.lambda2_0)
+            
+            lambda1 = self.lambda1
+            lambda2_1 = self.lambda2_1
+            lambda2_0 = self.lambda2_0
+>>>>>>> 43c7f08 (Sep 17 merge)
     
             # ── Update A (all tasks) ──
             A = self.multinomial_reg1_batched(
                 A, B_prev, None, obs_idx_per_task,
+<<<<<<< HEAD
                 self.lambda1, Alpha
+=======
+                lambda1, Alpha, objective=objective,
+                U=U_prev, dominant_labels=dominant_labels,
+>>>>>>> 43c7f08 (Sep 17 merge)
             )
     
             # ── Update B (all workers × groups) ──
             B = self.multinomial_reg2_batched(
                 B, A, None, obs_idx_per_worker_group,
+<<<<<<< HEAD
                 V, self.lambda2_0, self.lambda2_1, clusters,
                 n_task_group
             )
@@ -641,6 +1531,59 @@ class LFGP():
                 clusters[:, :, t] = centers
     
             V = V_cur.clone()
+=======
+                V, lambda2_0, lambda2_1, clusters,
+                n_task_group, objective=objective,
+                dominant_labels=dominant_labels,
+            )
+    
+            # ── Update U via KMeans (sklearn on CPU — A is small) ──
+            # ── Update U via KMeans (skipped when the grouping is clamped) ──
+            if scheme!="task_oracle":
+                A_np = self.to_numpy(A)
+                U_cur_np = KMeans(n_clusters=n_task_group, n_init=10).fit_predict(A_np)
+                U_cur_np = self.label_swap(U_cur_np, self.to_numpy(U_prev).astype(int))
+                U = self.to_torch(U_cur_np, dtype=torch.long)
+
+    
+            # ── Update V via GPU KMeans ──
+            if scheme == "worker_oracle":
+                clusters = self.worker_centers_from_V(
+                    B, 
+                    V,
+                    n_task_group,
+                    bias_scheme=bias_scheme,
+                 )
+            else:
+
+                # Normal estimated-worker case
+               for t in range(n_task_group):
+                    # Cluster only workers retained after the spectral screen.
+                    B_slice = B[active_idx, t, :]
+                
+                    if len(active_idx) < 3:
+                        V_cur[:, t] = 0
+                        continue
+                
+                    labels, centers = self.new_kmeans_gpu_3cluster(
+                        B_slice, lf_dim, len(active_idx),
+                        bias_scheme=bias_scheme,
+                        clusters_init=clusters[:, :, t]
+                    )
+                
+                    task_mask = U == t
+                
+                    if task_mask.any():
+                        task_direction = A[task_mask].mean(dim=0)
+                        labels, centers = self.relabel_worker_clusters_signed(labels, centers, task_direction)
+                
+                    # Removed workers stay LQ permanently.
+                    V_cur[:, t] = 0
+                    V_cur[active_idx, t] = labels                
+                    clusters[:, :, t] = centers
+                    
+               V = V_cur.clone()
+>>>>>>> 43c7f08 (Sep 17 merge)
     
             # ── Recompute obs indices for workers (U changed) ──
             obs_idx_per_worker_group = []
@@ -649,6 +1592,10 @@ class LFGP():
                 worker_groups = []
                 for group in range(n_task_group):
                     mask = ((data_np[:, 1] == worker_ids_np[w]) &
+<<<<<<< HEAD
+=======
+                            record_active &
+>>>>>>> 43c7f08 (Sep 17 merge)
                             (U_np[data_np[:, 0].astype(int)] == group))
                     t_idx = self.to_torch(task_idx_np[mask], dtype=torch.long)
                     labels_t = self.to_torch(data_np[mask, 2].astype(int), dtype=torch.long)
@@ -656,11 +1603,34 @@ class LFGP():
                 obs_idx_per_worker_group.append(worker_groups)
     
             # ── Loss ──
+<<<<<<< HEAD
             loss_cur = self.mc_loss_func_gpu(
                 data_t, task_idx_t, worker_idx_t,
                 A, B, U, V, clusters,
                 self.lambda1, self.lambda2_0, self.lambda2_1,
                 lf_dim, n_task_group
+=======
+            
+            dominant_labels_loss = None
+            
+            if objective == "consistency":
+            
+                dominant_labels_loss, _ = (
+                    self.dominant_labels_gpu(
+                        data_t,
+                        task_idx_t,
+                        worker_idx_t,
+                        U,
+                        n_task_group,
+                    )
+                )
+            loss_cur = self.mc_loss_func_gpu(
+                data_t, task_idx_t, worker_idx_t,
+                A, B, U, V, clusters,
+                lambda1, lambda2_0, lambda2_1,
+                lf_dim, n_task_group, objective=objective,
+                dominant_labels=dominant_labels_loss, worker_active_t=worker_active_t
+>>>>>>> 43c7f08 (Sep 17 merge)
             )
             loss_history.append(loss_cur)
     
@@ -681,10 +1651,16 @@ class LFGP():
             
             self.U = self.to_numpy(U).astype(int)
             self.V = self.to_numpy(V).astype(int)
+<<<<<<< HEAD
             new_U = self._mc_infer(data)
             
             #Find the clustering accuracy after each iteration
             acc_with_iter.append(np.mean(new_U == key))            
+=======
+            
+            #Find the clustering accuracy after each iteration
+            acc_with_iter.append(self.task_acc(self.U, key))            
+>>>>>>> 43c7f08 (Sep 17 merge)
     
         if verbose > 0:
             print("Optimization complete.")
@@ -696,8 +1672,28 @@ class LFGP():
         self.V = self.to_numpy(V)
         clusters_np = self.to_numpy(clusters)
         
+<<<<<<< HEAD
         plt.plot(range(len(acc_with_iter)), acc_with_iter)
         plt.show()
+=======
+        self.loss_history = list(loss_history)
+        self.acc_history = list(acc_with_iter)
+        
+        print(
+            "KMeans cluster acc:",
+            self.task_acc(U, key)
+        )
+        
+        print(
+            "Oracle-centroid acc:",
+            self.oracle_centroid_task_acc(
+                self.A,
+                key,
+                self.n_task_group
+            )
+        )
+
+>>>>>>> 43c7f08 (Sep 17 merge)
     
         return self.A, self.B, self.U, self.V, clusters_np
     
@@ -773,6 +1769,7 @@ class LFGP():
             
         return worker_acc
     
+<<<<<<< HEAD
     def _mc_infer_top2(self, data, key):
 
         top2_U = [[] for _ in range(self.n_task)]
@@ -860,6 +1857,25 @@ class LFGP():
         plt.bar(task, proportions_plot[:, 1], bottom = proportions_plot[:, 0],color = 'b')
         plt.show()
         return correct/len(key), top2_U, proportions
+=======
+    def oracle_centroid_task_acc(self, A, y_true, n_groups):
+        A = np.asarray(A)
+        y_true = np.asarray(y_true).astype(int)
+    
+        centers = np.zeros((n_groups, A.shape[1]))
+    
+        for g in range(n_groups):
+            centers[g] = A[y_true == g].mean(axis=0)
+    
+        dist = np.sum(
+            (A[:, None, :] - centers[None, :, :]) ** 2,
+            axis=2,
+        )
+    
+        pred = np.argmin(dist, axis=1)
+    
+        return np.mean(pred == y_true)
+>>>>>>> 43c7f08 (Sep 17 merge)
     
     def task_acc(self, data, key):
         membership = self.label_swap(data, key)
