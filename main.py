@@ -69,9 +69,9 @@ ENABLE = {
     "DS":       1,
     "MV_HQ":    0,
     "MV":       0,
-    "GLAD":     0,
-    "MultiSPA": 0,
-    "GTIC":     0,
+    "GLAD":     1,
+    "MultiSPA": 1,
+    "GTIC":     1,
 }
 
 # biased-center scheme for the LFGP worker KMeans / penalty (toggle — one
