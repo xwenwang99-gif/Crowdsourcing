@@ -25,13 +25,9 @@ import pandas as pd
 from sklearn.metrics import (
     f1_score, confusion_matrix, precision_recall_fscore_support,
     adjusted_rand_score,
-<<<<<<< HEAD
-)
-=======
     accuracy_score,
 )
 from scipy.optimize import linear_sum_assignment
->>>>>>> 43c7f08 (Sep 17 merge)
 
 TIER_NAMES = ("LQ", "HQ", "Biased")   # index = tier code
 
@@ -101,53 +97,6 @@ def diagnose_runs(y_true_list, y_pred_list, n_classes=None,
 # ========================================================================== #
 #  PART B — worker-tier classification metrics (HQ / biased / LQ)
 # ========================================================================== #
-<<<<<<< HEAD
-def build_tier_vectors(worker_label, hq_workers_pred, biased_workers_pred,
-                       pred_group, label, n_task_groups,
-                       truth_argmax_to_tier=None):
-    """
-    Build flat (y_true_tier, y_pred_tier) vectors over all (worker, group) pairs,
-    mirroring eigenInfer.py's V_true / V_pred_aligned construction.
-
-    Parameters
-    ----------
-    worker_label : ndarray (n_worker, n_task_groups, 3)
-        One-hot ground-truth tier per worker per *true* group. By default the
-        channel argmax is taken as the tier code (0=LQ, 1=HQ, 2=biased), matching
-        eigenInfer. If your channel order differs, pass `truth_argmax_to_tier`,
-        e.g. {0:1, 1:0, 2:2} to remap argmax-index -> tier code.
-    hq_workers_pred, biased_workers_pred : list of index arrays (per predicted group)
-        Outputs of `_hq_and_label_infer`. Everyone not listed is predicted LQ.
-    pred_group : ndarray (n_task,)
-        Predicted task-group assignment (LFGP `U`).
-    label : ndarray (n_task,)
-        True task labels, used to align each predicted group to a true group.
-    n_task_groups : int
-
-    Returns
-    -------
-    y_true_tier, y_pred_tier : 1-D int arrays of equal length (n_worker * n_task_groups)
-    """
-    from scipy.stats import mode
-    n_worker = worker_label.shape[0]
-
-    V_true = np.argmax(worker_label, axis=2)              # (n_worker, n_groups)
-    if truth_argmax_to_tier is not None:
-        V_true = np.vectorize(truth_argmax_to_tier.get)(V_true)
-
-    V_pred = np.zeros((n_worker, n_task_groups), dtype=int)   # default LQ = 0
-    for g in range(n_task_groups):
-        tasks_g = np.where(pred_group == g)[0]
-        if tasks_g.size == 0:
-            continue
-        true_g = int(mode(label[tasks_g], axis=None).mode)
-        if hq_workers_pred[g] is not None:
-            V_pred[hq_workers_pred[g], true_g] = 1
-        if biased_workers_pred[g] is not None:
-            V_pred[biased_workers_pred[g], true_g] = 2
-
-    return V_true.ravel().astype(int), V_pred.ravel().astype(int)
-=======
 def build_tier_vectors(
     worker_label,
     hq_workers_pred,
@@ -205,7 +154,6 @@ def build_tier_vectors(
         V_true.ravel().astype(int),
         V_pred.ravel().astype(int),
     )
->>>>>>> 43c7f08 (Sep 17 merge)
 
 
 def worker_diagnose(y_true_tier, y_pred_tier, tier_names=TIER_NAMES):
@@ -340,8 +288,6 @@ def build_worker_summary(agg):
     for metric, s in agg["summary"].items():           # accuracy, macro_f1, ari, biased_as_hq, hq_as_biased
         add("worker_overall", "Overall", metric, s)
     return pd.DataFrame(rows, columns=["section","name","metric","mean","sd","ci_low","ci_high","n"])
-<<<<<<< HEAD
-=======
 
 def print_spectral_worker_comparison(spectral, worker_label, pred_group, y_true):
     """
@@ -492,4 +438,3 @@ def task_group_mapping(pred_group, y_true, n_groups):
     mapping[row_ind] = col_ind
 
     return mapping
->>>>>>> 43c7f08 (Sep 17 merge)

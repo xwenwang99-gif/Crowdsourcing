@@ -400,9 +400,6 @@ def hq_vote_report(
             os.path.join(out_dir, f"hq_votes_{method_name}.csv"),
             block, fmt=fmt, delimiter=",", header=header, comments="",
         )
-<<<<<<< HEAD
-    return dist
-=======
     return dist
 # --------------------------------------------------------------------------- #
 #  Worker latent-factor visualization (PCA), fit-1 vs fit-2
@@ -567,4 +564,3 @@ def plot_loss_trajectory(loss_cold, loss_warm=None, acc_cold=None, acc_warm=None
         fig.savefig(path, dpi=150, bbox_inches="tight")
     plt.close(fig)
     return path
->>>>>>> 43c7f08 (Sep 17 merge)

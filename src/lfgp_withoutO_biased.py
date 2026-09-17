@@ -16,10 +16,7 @@ from collections import Counter
 from scipy import stats
 from scipy.optimize import linear_sum_assignment
 import torch
-<<<<<<< HEAD
-=======
 import torch.nn.functional as F
->>>>>>> 43c7f08 (Sep 17 merge)
 
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 print(f"Using device: {DEVICE}")
@@ -145,11 +142,7 @@ class LFGP():
 
 
     
-<<<<<<< HEAD
-    def _init_mc_params(self, data, task_lf, worker_lf, scheme):
-=======
     def _init_mc_params(self, data, task_lf, worker_lf, scheme, U_init=None, V_init=None, clusters_init=None):
->>>>>>> 43c7f08 (Sep 17 merge)
 
         # initialize model parameters for multicategory crowdsourcing
         # two initialization schemes are available: mv and random
@@ -161,16 +154,7 @@ class LFGP():
 
             U = task_member[:, 1]
             V = worker_member
-<<<<<<< HEAD
-            '''         
-            noise_scale = 0.1
-
-            A = task_lf + np.random.normal(0, noise_scale, size=task_lf.shape)
-            B = worker_lf + np.random.normal(0, noise_scale, size=worker_lf.shape)
-            '''
-=======
  
->>>>>>> 43c7f08 (Sep 17 merge)
             A = self._init_task_lf_gp(task_member)
             B = self._init_worker_lf_gp(worker_member)
             
@@ -189,8 +173,6 @@ class LFGP():
             A = self._init_task_lf_gp(task_member)
             B = self._init_worker_lf_gp(worker_member)
             
-<<<<<<< HEAD
-=======
         elif scheme == "warm":
             required = {
                 "A_init": task_lf,
@@ -258,7 +240,6 @@ class LFGP():
             B = self._init_worker_lf_gp(V)
 
             
->>>>>>> 43c7f08 (Sep 17 merge)
                       
         U = U.astype(int)
         V = V.astype(int)
@@ -295,66 +276,6 @@ class LFGP():
         return lf
     
 
-<<<<<<< HEAD
-    def _init_worker_lf_gp(self, member):
-
-        # initialize model parameters (worker latent factors) using surrogate group information
-
-        lf = np.zeros((self.n_worker, self.n_task_group, self.lf_dim))
-
-        for t_group in range(self.n_task_group):
-            for i in range(self.n_worker):
-                worker_idx = member[i, t_group]  # The worker's subgroup for this task group
-                
-                # Generate a latent factor for the worker in this task group
-                tmp_centroid = 2 * np.random.rand(self.lf_dim) - 1  # Random initialization
-                #tmp_centroid /= np.linalg.norm(tmp_centroid)  # Normalize
-                lf[i, t_group, :] = np.random.multivariate_normal(tmp_centroid, 0.2 * np.eye(self.lf_dim))
-    
-        return lf  # Shape (n_worker, n_task_group, lf_dim)
-    
-    def mc_loss_func_gpu(self,data_t, task_id, worker_id, A, B, U, V,
-                     clusters, lambda1, lambda2_0, lambda2_1, lf_dim, n_task_group):
-        """
-        Fully vectorized loss — no Python loop over records.
-        data_t   : (n_record, 3) torch tensor  [task, worker, label]
-        clusters : (2, lf_dim, n_task_group) torch tensor
-        """
-        # ── likelihood ──
-        A_obs = A[task_id]                      # (R, k)
-        B_obs = B[worker_id]                    # (R, C, k)
-        labels = data_t[:, 2].long()            # (R,)
-    
-        logits = torch.einsum('rk,rck->rc', A_obs, B_obs)   # (R, C)
-        log_probs = torch.log_softmax(logits, dim=1)          # (R, C)
-        loss = -log_probs[torch.arange(len(labels)), labels].sum()
-    
-        # ── penalty 1: task group ──
-        penalty1 = torch.tensor(0.0, device=DEVICE)
-        for g in torch.unique(U):
-            mask = (U == g)
-            centroid = A[mask].mean(0)
-            penalty1 += lambda1 * torch.sum((A[mask] - centroid) ** 2)
-    
-        # ── penalty 2: worker group ──
-        penalty2 = torch.tensor(0.0, device=DEVICE)
-        for j in range(n_task_group):
-            mask0 = (V[:, j] == 0)
-            mask1 = (V[:, j] == 1)
-            mask2 = (V[:, j] == 2)
-            if mask0.any():
-                # LQ center: origin in the "free2" scheme, a free mean in "free3"
-                center0 = clusters[0, :, j]
-                penalty2 += lambda2_0 * torch.sum((B[mask0, j, :] - center0) ** 2)
-            if mask1.any():
-                center1 = clusters[1, :, j]
-                penalty2 += lambda2_1 * torch.sum((B[mask1, j, :] - center1) ** 2)
-            if mask2.any():
-                center2 = clusters[2, :, j]
-                penalty2 += lambda2_1 * torch.sum((B[mask2, j, :] - center2) ** 2)
-    
-        return (loss + penalty1 + penalty2).item()
-=======
     def _init_worker_lf_gp(self, member, scale=(0.0, 1.0, 2.0)):
         """scale = (LQ, biased, HQ) centroid norms, matching the
         smallest/middle/largest convention in new_kmeans_gpu_3cluster."""
@@ -582,7 +503,6 @@ class LFGP():
             + penalty1
             + penalty2
         ).item()
->>>>>>> 43c7f08 (Sep 17 merge)
     
     def comp_centroid_gpu(self,A, B, U, V, n_task_group):
         """
@@ -612,25 +532,6 @@ class LFGP():
         return Centroid_A, Centroid_B
 
     
-<<<<<<< HEAD
-    def multinomial_reg1_batched(self,A, B_all, Y_all, obs_idx_per_task,
-                              lambd, Alpha, max_iter=10, lr=0.001, tol=1e-1):
-        """
-        Batched gradient descent for ALL tasks simultaneously.
-    
-        A        : (n_task, k)         - task latent factors
-        B_all    : (n_worker, C, k)    - worker latent factors
-        Y_all    : (n_record,)         - labels (int)
-        obs_idx_per_task: list of (obs_worker_indices, obs_labels) per task
-                          precomputed once before the loop
-        Alpha    : (n_task, k)         - task group centroids
-        """
-        # We update each task independently but in vectorized form per task.
-        # For truly batched updates across tasks, tasks must have the same number
-        # of observations — which they generally don't. We therefore vectorize
-        # WITHIN each task (eliminate the inner n/c loops) and call torch.vmap
-        # or a simple per-task loop that is fast because all ops are tensor ops.
-=======
     def multinomial_reg1_batched(
         self,
         A,
@@ -662,40 +563,10 @@ class LFGP():
             raise ValueError(
                 "objective must be 'label' or 'consistency'"
             )
->>>>>>> 43c7f08 (Sep 17 merge)
     
         n_task, k = A.shape
     
         for t in range(n_task):
-<<<<<<< HEAD
-            worker_idx, obs_labels = obs_idx_per_task[t]
-            if len(worker_idx) == 0:
-                continue
-    
-            B = B_all[worker_idx]          # (N, C, k)
-            Y = obs_labels                 # (N,)
-            beta = A[t].clone()            # (k,)
-            centroid = Alpha[t]            # (k,)
-    
-            for _ in range(max_iter):
-                # conc1 = B @ beta  →  (N, C)
-                conc1 = (B @ beta)                          # (N, C)
-                conc1 = torch.softmax(conc1, dim=1)         # (N, C)
-    
-                # grad = sum_n [ -B[n,Y[n],:] + sum_c softmax_nc * B[n,c,:] ]
-                #       + 2*lambd*(beta - centroid)
-                # B[n,Y[n],:] gathered:
-                B_true = B[torch.arange(len(Y)), Y]         # (N, k)
-                # weighted sum of B:  einsum nc,nck->k
-                B_weighted = torch.einsum('nc,nck->k', conc1, B)  # (k,)
-    
-                # REPLACE with just this one line:
-                grad = B_weighted - B_true.sum(0) + 2 * lambd * (beta - centroid)
-    
-                if torch.linalg.norm(grad) <= tol:
-                    break
-                beta = beta - lr * grad
-=======
     
             worker_idx, obs_labels = obs_idx_per_task[t]
     
@@ -810,73 +681,12 @@ class LFGP():
                         break
     
                     beta = beta - lr * grad
->>>>>>> 43c7f08 (Sep 17 merge)
     
             A[t] = beta
     
         return A
 
     
-<<<<<<< HEAD
-    def multinomial_reg2_batched(self, B, A_all, Y_all, obs_idx_per_worker_group,
-                             V, lambda2_0, lambda2_1, clusters,
-                             n_task_group, max_iter=10, lr=0.001, tol=1e-1):
-
-        n_worker = B.shape[0]
-
-        for w in range(n_worker):
-            for group in range(n_task_group):
-
-                task_idx, obs_labels = obs_idx_per_worker_group[w][group]
-
-                if len(task_idx) == 0:
-                    continue
-
-                A = A_all[task_idx]          # shape (M, k)
-                Y = obs_labels.long()        # shape (M,)
-
-                # Important: beta is now one vector, not a C x k matrix
-                beta = B[w, group, :].clone()  # shape (k,)
-
-                worker_group = int(V[w, group].item())
-
-                if worker_group == 0:
-                    lambd = lambda2_0
-                    centroid = clusters[0, :, group]
-
-                elif worker_group == 1:
-                    lambd = lambda2_1
-                    centroid = clusters[1, :, group]
-
-                else:
-                    lambd = lambda2_1
-                    centroid = clusters[2, :, group]
-
-                for _ in range(max_iter):
-
-                    # y_binary = 1 if worker label agrees with task group label
-                    y_binary = (Y == group).float()      # shape (M,)
-
-                    # P(Y == group) = sigmoid(a_i^T beta)
-                    logits = A @ beta                    # shape (M,)
-                    prob = torch.sigmoid(logits)         # shape (M,)
-
-                    # Logistic regression gradient
-                    grad = (prob - y_binary) @ A         # shape (k,)
-
-                    # Penalty gradient
-                    grad = grad + 2 * lambd * (beta - centroid)
-
-                    if torch.linalg.norm(grad) <= tol:
-                        break
-
-                    beta = beta - lr * grad
-
-                B[w, group, :] = beta
-
-        return B
-    
-=======
     def multinomial_reg2_batched(
         self,
         B,
@@ -1026,7 +836,6 @@ class LFGP():
                 ] = beta
     
         return B
->>>>>>> 43c7f08 (Sep 17 merge)
 
     def label_swap(self, Grp_cur, Grp_prev):
         Grp_cur = np.asarray(Grp_cur, dtype=int)
@@ -1048,100 +857,6 @@ class LFGP():
         return mapping[Grp_cur]
         
     def new_kmeans_gpu_3cluster(self, X, lf_dim, n_worker, max_iter=300, tol=1e-4,
-<<<<<<< HEAD
-                                bias_scheme="free2"):
-        """
-        3-cluster KMeans matching the worker-group penalty. In both schemes
-        the groups are identified through the magnitude of the center norms:
-          label 0 = LQ      (smallest-norm center)
-          label 1 = HQ      (largest-norm center)
-          label 2 = biased  (middle-norm center)
-
-        bias_scheme:
-          "free2" — center[0] is fixed at the origin (LQ, W=0);
-                    centers 1 and 2 are free means
-          "free3" — all three centers are free means
-
-        X      : (n_worker, lf_dim) torch tensor on DEVICE
-        Returns: labels  (n_worker,)     — 0=LQ, 1=HQ, 2=biased
-                 centers (3, lf_dim)     — both on DEVICE
-        """
-        centers = torch.zeros(3, lf_dim, device=DEVICE)
-
-        # Initialise center[1] (HQ) as the worker with the largest norm
-        norms = torch.linalg.norm(X, dim=1)
-        centers[1] = X[torch.argmax(norms)]
-
-        # Initialise center[2] (biased) as the worker with the largest norm
-        # in the direction orthogonal to center[1]
-        proj = (X @ centers[1]) / (torch.linalg.norm(centers[1]) ** 2 + 1e-12)
-        X_orth = X - proj.unsqueeze(1) * centers[1].unsqueeze(0)  # (n_worker, lf_dim)
-        orth_norms = torch.linalg.norm(X_orth, dim=1)
-        centers[2] = X[torch.argmax(orth_norms)]
-
-        if bias_scheme == "free3":
-            # Initialise center[0] (LQ) as the worker with the smallest norm
-            centers[0] = X[torch.argmin(norms)]
-
-        labels = torch.zeros(n_worker, dtype=torch.long, device=DEVICE)
-
-        for _ in range(max_iter):
-            # ── Assignment step ──────────────────────────────────────────
-            # distances: (n_worker, 3)
-            diff = X.unsqueeze(1) - centers.unsqueeze(0)   # (n_worker, 3, lf_dim)
-            distances = torch.linalg.norm(diff, dim=2)      # (n_worker, 3)
-            new_labels = torch.argmin(distances, dim=1)
-
-            # ── Update step ──────────────────────────────────────────────
-            new_centers = centers.clone()
-
-            # center[0]: fixed at origin in "free2", free mean in "free3"
-            if bias_scheme == "free3":
-                pts_lq = X[new_labels == 0]
-                if len(pts_lq) > 0:
-                    new_centers[0] = pts_lq.mean(0)
-
-            # center[1]: mean of HQ-assigned workers
-            pts_hq = X[new_labels == 1]
-            if len(pts_hq) > 0:
-                new_centers[1] = pts_hq.mean(0)
-
-            # center[2]: mean of biased-assigned workers
-            pts_bias = X[new_labels == 2]
-            if len(pts_bias) > 0:
-                new_centers[2] = pts_bias.mean(0)
-
-            # ── Convergence check ────────────────────────────────────────
-            if torch.all(torch.abs(new_centers - centers) < tol):
-                labels = new_labels
-                centers = new_centers
-                break
-
-            centers = new_centers
-            labels = new_labels
-
-        # ── Label disambiguation by center-norm magnitude ────────────────
-        # smallest-norm center → LQ (0), largest → HQ (1), middle → biased (2).
-        # In the "free2" scheme center[0] is the origin (norm 0), so it always
-        # keeps the LQ label and this reduces to the 1↔2 swap.
-        center_norms = torch.linalg.norm(centers, dim=1)
-        order = torch.argsort(center_norms)                 # ascending
-        relabel = torch.empty(3, dtype=torch.long, device=DEVICE)
-        relabel[order[0]] = 0   # smallest norm → LQ
-        relabel[order[2]] = 1   # largest norm  → HQ
-        relabel[order[1]] = 2   # middle norm   → biased
-        labels = relabel[labels]
-        centers = centers[torch.stack([order[0], order[2], order[1]])]
-
-        return labels, centers
-
-
-
-  
-    
-    def _mc_fit(self, data, key, scheme="mv", maxiter=50, epsilon=1e-5, verbose=0, A = None, B = None,
-                bias_scheme="free2"):
-=======
                             bias_scheme="free2", clusters_init=None):
         if clusters_init is not None:
             centers = clusters_init.clone().to(device=DEVICE, dtype=X.dtype)
@@ -1309,7 +1024,6 @@ class LFGP():
     
     def _mc_fit(self, data, key, scheme="mv", maxiter=50, epsilon=1e-5, verbose=0, 
                 bias_scheme="free2", objective="label", A_init = None, B_init = None, U_init=None, V_init=None, clusters_init=None, worker_active_mask=None):
->>>>>>> 43c7f08 (Sep 17 merge)
         """
         GPU-accelerated drop-in replacement for _mc_fit.
         self must have: A, B, U, V, lf_dim, n_task, n_worker, n_task_group,
@@ -1321,9 +1035,6 @@ class LFGP():
         center-norm magnitude (smallest=LQ, largest=HQ, middle=biased).
         """
         acc_with_iter = []
-<<<<<<< HEAD
-        self._init_mc_params(data, A, B, scheme=scheme)
-=======
         self._init_mc_params(data, A_init, B_init, scheme=scheme, U_init=U_init, V_init=V_init, clusters_init=clusters_init)
         
         if worker_active_mask is None:
@@ -1343,7 +1054,6 @@ class LFGP():
         # Since free2 fixes the LQ center at zero, keep removed workers at the origin.
         if bias_scheme == "free2":
             self.B[~worker_active_mask, :, :] = 0.0
->>>>>>> 43c7f08 (Sep 17 merge)
         
         self.U = self.U.astype(int)
         self.V = self.V.astype(int)
@@ -1358,18 +1068,6 @@ class LFGP():
         V = self.to_torch(self.V, dtype=torch.long)   # (n_worker, C)
     
         data_np = data
-<<<<<<< HEAD
-        data_t = self.to_torch(data)       # (n_record, 3)
-    
-        task_ids_np, task_idx_np = np.unique(data[:, 0], return_inverse=True)
-        worker_ids_np, worker_idx_np = np.unique(data[:, 1], return_inverse=True)
-    
-        task_idx_t  = self.to_torch(task_idx_np,  dtype=torch.long)
-        worker_idx_t = self.to_torch(worker_idx_np, dtype=torch.long)
-    
-        n_task_group = self.n_task_group
-        lf_dim = self.lf_dim
-=======
 
         task_ids_np, task_idx_np = np.unique(data_np[:, 0], return_inverse=True)
         worker_ids_np, worker_idx_np = np.unique(data_np[:, 1], return_inverse=True)
@@ -1386,17 +1084,12 @@ class LFGP():
         
         worker_active_t = self.to_torch(worker_active_mask, dtype=torch.bool)
         active_idx = torch.where(worker_active_t)[0]
->>>>>>> 43c7f08 (Sep 17 merge)
     
         # ── Precompute observation indices (done once, on CPU for indexing) ──
         # obs_idx_per_task[t] = (worker_indices_tensor, labels_tensor)
         obs_idx_per_task = []
         for t in range(self.n_task):
-<<<<<<< HEAD
-            mask = (data_np[:, 0] == task_ids_np[t])
-=======
             mask = (data_np[:, 0] == task_ids_np[t]) & record_active
->>>>>>> 43c7f08 (Sep 17 merge)
             w_idx = self.to_torch(worker_idx_np[mask], dtype=torch.long)
             labels = self.to_torch(data_np[mask, 2].astype(int), dtype=torch.long)
             obs_idx_per_task.append((w_idx, labels))
@@ -1406,24 +1099,16 @@ class LFGP():
         for w in range(self.n_worker):
             worker_groups = []
             for group in range(n_task_group):
-<<<<<<< HEAD
-                mask = ((data_np[:, 1] == worker_ids_np[w]) &
-                        (U[data_np[:, 0].astype(int)].cpu().numpy() == group))
-=======
                 mask = (
                     (data_np[:, 1] == worker_ids_np[w]) &
                     record_active &
                     (U[data_np[:, 0].astype(int)].cpu().numpy() == group)
                 )
->>>>>>> 43c7f08 (Sep 17 merge)
                 t_idx = self.to_torch(task_idx_np[mask], dtype=torch.long)
                 labels = self.to_torch(data_np[mask, 2].astype(int), dtype=torch.long)
                 worker_groups.append((t_idx, labels))
             obs_idx_per_worker_group.append(worker_groups)
     
-<<<<<<< HEAD
-        clusters = torch.zeros(3, lf_dim, n_task_group, device=DEVICE)
-=======
         clusters = self.worker_centers_from_V(
             B,
             V,
@@ -1431,7 +1116,6 @@ class LFGP():
             bias_scheme=bias_scheme,
             worker_active_t = worker_active_t
         )
->>>>>>> 43c7f08 (Sep 17 merge)
         loss_prev = float("inf")
         loss_history = []
     
@@ -1439,19 +1123,7 @@ class LFGP():
             print(f"Starting GPU optimization on {DEVICE}...")
     
         V_cur = V.clone()
-<<<<<<< HEAD
-
-        for g in range(n_task_group):
-            for tier in [0, 1, 2]:
-                mask = (V[:, g] == tier)
-                if mask.any():
-                    if tier == 0:
-                        clusters[0, :, g] = 0.0
-                    else:
-                        clusters[tier, :, g] = B[mask, g, :].mean(0)
-=======
         
->>>>>>> 43c7f08 (Sep 17 merge)
             
         for iter_count in range(maxiter):
             if verbose > 0:
@@ -1461,10 +1133,6 @@ class LFGP():
             B_prev = B.clone()
             U_prev = U.clone()
             V_prev = V.clone()
-<<<<<<< HEAD
-    
-            Alpha, _ = self.comp_centroid_gpu(A_prev, B_prev, U_prev, V_prev, n_task_group)
-=======
             
             # =======================================================
             # Worker-specific dominant response m_{jg}
@@ -1494,44 +1162,17 @@ class LFGP():
             lambda1 = self.lambda1
             lambda2_1 = self.lambda2_1
             lambda2_0 = self.lambda2_0
->>>>>>> 43c7f08 (Sep 17 merge)
     
             # ── Update A (all tasks) ──
             A = self.multinomial_reg1_batched(
                 A, B_prev, None, obs_idx_per_task,
-<<<<<<< HEAD
-                self.lambda1, Alpha
-=======
                 lambda1, Alpha, objective=objective,
                 U=U_prev, dominant_labels=dominant_labels,
->>>>>>> 43c7f08 (Sep 17 merge)
             )
     
             # ── Update B (all workers × groups) ──
             B = self.multinomial_reg2_batched(
                 B, A, None, obs_idx_per_worker_group,
-<<<<<<< HEAD
-                V, self.lambda2_0, self.lambda2_1, clusters,
-                n_task_group
-            )
-    
-            # ── Update U via KMeans (sklearn on CPU — A is small) ──
-            A_np = self.to_numpy(A)
-            U_cur_np = KMeans(n_clusters=n_task_group, n_init=10).fit_predict(A_np)
-            U_cur_np = self.label_swap(U_cur_np, self.to_numpy(U_prev))
-            U = self.to_torch(U_cur_np, dtype=torch.long)
-
-    
-            # ── Update V via GPU KMeans ──
-            for t in range(n_task_group):
-                B_slice = B[:, t, :]   # (n_worker, k)
-                labels, centers = self.new_kmeans_gpu_3cluster(
-                    B_slice, lf_dim, self.n_worker, bias_scheme=bias_scheme)
-                V_cur[:, t] = labels
-                clusters[:, :, t] = centers
-    
-            V = V_cur.clone()
-=======
                 V, lambda2_0, lambda2_1, clusters,
                 n_task_group, objective=objective,
                 dominant_labels=dominant_labels,
@@ -1583,7 +1224,6 @@ class LFGP():
                     clusters[:, :, t] = centers
                     
                V = V_cur.clone()
->>>>>>> 43c7f08 (Sep 17 merge)
     
             # ── Recompute obs indices for workers (U changed) ──
             obs_idx_per_worker_group = []
@@ -1592,10 +1232,7 @@ class LFGP():
                 worker_groups = []
                 for group in range(n_task_group):
                     mask = ((data_np[:, 1] == worker_ids_np[w]) &
-<<<<<<< HEAD
-=======
                             record_active &
->>>>>>> 43c7f08 (Sep 17 merge)
                             (U_np[data_np[:, 0].astype(int)] == group))
                     t_idx = self.to_torch(task_idx_np[mask], dtype=torch.long)
                     labels_t = self.to_torch(data_np[mask, 2].astype(int), dtype=torch.long)
@@ -1603,13 +1240,6 @@ class LFGP():
                 obs_idx_per_worker_group.append(worker_groups)
     
             # ── Loss ──
-<<<<<<< HEAD
-            loss_cur = self.mc_loss_func_gpu(
-                data_t, task_idx_t, worker_idx_t,
-                A, B, U, V, clusters,
-                self.lambda1, self.lambda2_0, self.lambda2_1,
-                lf_dim, n_task_group
-=======
             
             dominant_labels_loss = None
             
@@ -1630,7 +1260,6 @@ class LFGP():
                 lambda1, lambda2_0, lambda2_1,
                 lf_dim, n_task_group, objective=objective,
                 dominant_labels=dominant_labels_loss, worker_active_t=worker_active_t
->>>>>>> 43c7f08 (Sep 17 merge)
             )
             loss_history.append(loss_cur)
     
@@ -1651,16 +1280,9 @@ class LFGP():
             
             self.U = self.to_numpy(U).astype(int)
             self.V = self.to_numpy(V).astype(int)
-<<<<<<< HEAD
-            new_U = self._mc_infer(data)
-            
-            #Find the clustering accuracy after each iteration
-            acc_with_iter.append(np.mean(new_U == key))            
-=======
             
             #Find the clustering accuracy after each iteration
             acc_with_iter.append(self.task_acc(self.U, key))            
->>>>>>> 43c7f08 (Sep 17 merge)
     
         if verbose > 0:
             print("Optimization complete.")
@@ -1672,10 +1294,6 @@ class LFGP():
         self.V = self.to_numpy(V)
         clusters_np = self.to_numpy(clusters)
         
-<<<<<<< HEAD
-        plt.plot(range(len(acc_with_iter)), acc_with_iter)
-        plt.show()
-=======
         self.loss_history = list(loss_history)
         self.acc_history = list(acc_with_iter)
         
@@ -1693,7 +1311,6 @@ class LFGP():
             )
         )
 
->>>>>>> 43c7f08 (Sep 17 merge)
     
         return self.A, self.B, self.U, self.V, clusters_np
     
@@ -1769,95 +1386,6 @@ class LFGP():
             
         return worker_acc
     
-<<<<<<< HEAD
-    def _mc_infer_top2(self, data, key):
-
-        top2_U = [[] for _ in range(self.n_task)]
-        U_pred = np.zeros(self.n_task)
-        proportions = np.zeros((self.n_task_group, 2))
-        
-        for t in range(self.n_task_group):
-            top2_label = np.zeros(2)
-            top2_props = np.zeros(2)
-            hq_worker = np.where(self.V[:, t] == 1)[0]
-            task_t_indices = np.where(self.U == t)[0]
-            task_group_data = data[np.isin(data[:, 1], hq_worker) & np.isin(data[:, 0], task_t_indices)]
-
-            if task_group_data.shape[0] > 0:
-                labels = task_group_data[:, 2]
-                counter = Counter(labels)
-                top2 = counter.most_common(2)
-                i = 0
-                for label,count in top2:
-                    top2_label[i] = int(label)
-                    top2_props[i] = count / len(task_group_data)
-                    i = i + 1
-
-            else:
-                top2_label = []
-    
-            for idx in task_t_indices:
-                top2_U[idx] = top2_label
-                
-            proportions[t, :] = top2_props
-                
-        correct = 0        
-        t=0
-        U_pred = [row[0] if len(row) > 0 else None for row in top2_U]
-        for pred, true in zip(top2_U, key):
-            if true in pred:
-                correct += 1
-                U_pred[t] = true
-            t+=1
-
-        U_pred = np.column_stack((np.arange(len(U_pred)), U_pred))
-        return correct/len(key), U_pred
-
-    def _mc_infer_by_task_top2(self, data, key):
-
-        top2_U = [[] for _ in range(self.n_task)]
-        proportions = np.zeros((self.n_task, 2))
-        
-        for t in range(self.n_task):
-            task_t = self.U[t]
-            top2_label = np.zeros(2)
-            top2_props = np.zeros(2)
-            hq_worker = np.where(self.V[:, task_t] == 1)[0]
-            task_data = data[np.isin(data[:, 1], hq_worker) & (data[:, 0] == t)]
-    
-            if task_data.shape[0] > 0:
-                labels = task_data[:, 2]
-                counter = Counter(labels)
-                top2 = counter.most_common(2)
-                i = 0
-                for label,count in top2:
-                    top2_label[i] = int(label)
-                    top2_props[i] = count / len(task_data)
-                    i = i + 1
-                
-            else:
-                top2_label = []
-                
-            top2_U[t] = top2_label
-            proportions[t, :] = top2_props
-                
-        correct = 0
-        
-        for pred, true in zip(top2_U, key):
-            if true in pred:
-                correct += 1
-                
-        proportions_plot = proportions
-        
-        for i in range(len(proportions)):
-            proportions_plot[i, 0] = max(proportions[i, 0], proportions[i, 1])
-            proportions_plot[i, 1] = min(proportions[i, 0], proportions[i, 1])
-        task = range(self.n_task)
-        plt.bar(task, proportions_plot[:, 0], color = 'r')
-        plt.bar(task, proportions_plot[:, 1], bottom = proportions_plot[:, 0],color = 'b')
-        plt.show()
-        return correct/len(key), top2_U, proportions
-=======
     def oracle_centroid_task_acc(self, A, y_true, n_groups):
         A = np.asarray(A)
         y_true = np.asarray(y_true).astype(int)
@@ -1875,7 +1403,6 @@ class LFGP():
         pred = np.argmin(dist, axis=1)
     
         return np.mean(pred == y_true)
->>>>>>> 43c7f08 (Sep 17 merge)
     
     def task_acc(self, data, key):
         membership = self.label_swap(data, key)
