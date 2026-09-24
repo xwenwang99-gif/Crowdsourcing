@@ -21,14 +21,17 @@ import warnings
 import numpy as np
 import pandas as pd
 from scipy.stats import mode
+from scipy.optimize import linear_sum_assignment
 from sklearn.metrics import (
     balanced_accuracy_score,
     accuracy_score,
+    confusion_matrix,
     f1_score,
     adjusted_rand_score,
 )
 
 from src.lfgp_withoutO_biased import LFGP
+from src.lfgp_paper import LFGP_PAPER
 from src.GTIC import gtic
 from src.multispa import multispa_fit_predict
 from src.getdata_biased import getdata_biased
@@ -53,8 +56,8 @@ warnings.filterwarnings("ignore")
 # --------------------------------------------------------------------------- #
 #  configuration
 # --------------------------------------------------------------------------- #
-N_RUNS        = 5
-MAXITER       = 100
+N_RUNS        = 1
+MAXITER       = 1
 N_TASK        = 200
 N_WORKER      = 400
 N_TASK_GROUPS = 5
@@ -72,6 +75,7 @@ ENABLE = {
     "GLAD":     1,
     "MultiSPA": 1,
     "GTIC":     1,
+    "LFGP":     1,
 }
 
 # biased-center scheme for the LFGP worker KMeans / penalty (toggle — one
@@ -83,6 +87,7 @@ BIAS_SCHEME = "free2"
 DRAW_HQ_VOTES = 0
 OBJECTIVE = "label"
 REMOVE_GLOBAL_LQ = False
+SAVE_RESULTS = False      # False: no results/run_<timestamp>/ folder, nothing written to disk
 
 METHODS = [m for m, on in ENABLE.items() if on]
 
@@ -97,7 +102,12 @@ DATA_KW = dict(                       # getdata_biased arguments, kept in one pl
 # --------------------------------------------------------------------------- #
 RUN_ID  = time.strftime("%Y%m%d_%H%M%S")
 OUT_DIR = os.path.join("results", f"run_{RUN_ID}")
-os.makedirs(OUT_DIR, exist_ok=True)
+if SAVE_RESULTS:
+    os.makedirs(OUT_DIR, exist_ok=True)
+
+
+def out_path(name):
+    return os.path.join(OUT_DIR, name) if SAVE_RESULTS else None
 
 
 def _to_native(o):
@@ -111,6 +121,8 @@ def _to_native(o):
 
 
 def save_json(path, obj):
+    if path is None:
+        return
     with open(path, "w") as f:
         json.dump(obj, f, indent=2, default=_to_native)
 
@@ -118,10 +130,22 @@ def save_json(path, obj):
 # --------------------------------------------------------------------------- #
 #  shared evaluation: every method just hands us a predicted-label vector
 # --------------------------------------------------------------------------- #
+def cluster_accuracy(y_true, y_pred, n_classes):
+    """Best accuracy over all label permutations (Hungarian matching).
+    Predictions outside [0, n_classes) (e.g. -1 for 'no label') count as wrong."""
+    y_true = np.asarray(y_true, dtype=int)
+    y_pred = np.nan_to_num(np.asarray(y_pred, dtype=float), nan=-1).astype(int)
+    valid = (y_pred >= 0) & (y_pred < n_classes)
+    counts = confusion_matrix(y_true[valid], y_pred[valid], labels=np.arange(n_classes))
+    row_ind, col_ind = linear_sum_assignment(-counts)
+    return counts[row_ind, col_ind].sum() / len(y_true)
+
+
 def evaluate(y_true, y_pred, n_classes):
     acc, macro_f1 = diagnose(y_true, y_pred, n_classes=n_classes)
     bal = balanced_accuracy_score(y_true, y_pred)
-    return {"accuracy": acc, "macro_f1": macro_f1, "bal_acc": bal}
+    return {"accuracy": acc, "macro_f1": macro_f1, "bal_acc": bal,
+            "cluster_acc": cluster_accuracy(y_true, y_pred, n_classes)}
 
 
 def build_summary(metrics):
@@ -164,11 +188,12 @@ def spectral_to_V(hq_workers_pred, biased_workers_pred, n_worker, n_groups):
 # --------------------------------------------------------------------------- #
 #  metric store:  metrics[method][metric] -> list over runs
 # --------------------------------------------------------------------------- #
-metrics = {m: {"accuracy": [], "macro_f1": [], "bal_acc": []} for m in METHODS}
-# the LFGP-based methods additionally report the task-grouping (cluster) accuracy
-for _name in ("Eigen_L2", "Likelihood", "Likelihood2", "Eigen_L2_v2","Eigen_Oracle", "DS"):
-    if _name in metrics:
-        metrics[_name]["cluster_acc"] = []
+# accuracy    -- plain label accuracy, no permutation.
+# cluster_acc -- best accuracy over label permutations.  The LFGP-based methods
+#                record it themselves from their task grouping U; every other
+#                method gets it from its predicted labels in evaluate().
+metrics = {m: {"accuracy": [], "macro_f1": [], "bal_acc": [], "cluster_acc": []}
+           for m in METHODS}
 
 start = time.perf_counter()
 removed_worker_records = []
@@ -239,7 +264,7 @@ for i in range(N_RUNS):
 
         hq_vote_report(rating, pred_group, hq_workers_pred, N_TASK_GROUPS,
                OUT_DIR, f"Eigen_L2_run{i}",
-               y_true=y_true, draw=bool(DRAW_HQ_VOTES))
+               y_true=y_true, draw=bool(DRAW_HQ_VOTES) and SAVE_RESULTS)
 
         metrics["Eigen_L2"]["cluster_acc"].append(cluster_acc)
         produced["Eigen_L2"] = y_pred
@@ -319,7 +344,7 @@ for i in range(N_RUNS):
     
             hq_vote_report(rating, pred_group2, hq_workers_pred2, N_TASK_GROUPS,
                    OUT_DIR, f"Eigen_L2_v2_run{i}",
-                   y_true=y_true, draw=bool(DRAW_HQ_VOTES))
+                   y_true=y_true, draw=bool(DRAW_HQ_VOTES) and SAVE_RESULTS)
     
             metrics["Eigen_L2_v2"]["cluster_acc"].append(cluster_acc2)
             produced["Eigen_L2_v2"] = y_pred_e2
@@ -334,14 +359,14 @@ for i in range(N_RUNS):
                 worker_tier_true=np.argmax(worker_label, axis=2),
                 clusters_list=[clusters_true, clusters_np, clusters2],
                 titles=("ground truth", "fit 1 (cold)", "fit 2 (warm)"),
-                path=os.path.join(OUT_DIR, f"worker_lf_pca_run{i}.png"),
+                path=out_path(f"worker_lf_pca_run{i}.png"),
                 draw=bool(DRAW_HQ_VOTES),
             )
             
             plot_loss_trajectory(
                 model.loss_history, model2.loss_history,
                 acc_cold=model.acc_history, acc_warm=model2.acc_history,
-                path=os.path.join(OUT_DIR, f"loss_run{i}.png"),
+                path=out_path(f"loss_run{i}.png"),
                 draw=bool(DRAW_HQ_VOTES),
                 title=f"Objective trajectory (run {i})",
             )
@@ -366,7 +391,7 @@ for i in range(N_RUNS):
 
         hq_vote_report(rating, oracle_group, hq_or, N_TASK_GROUPS,
                        OUT_DIR, f"Eigen_Oracle_run{i}",
-                       y_true=y_true, draw=bool(DRAW_HQ_VOTES))
+                       y_true=y_true, draw=bool(DRAW_HQ_VOTES) and SAVE_RESULTS)
 
         metrics["Eigen_Oracle"]["cluster_acc"].append(1.0)   # oracle grouping
         produced["Eigen_Oracle"] = y_pred_or
@@ -407,21 +432,30 @@ for i in range(N_RUNS):
         y_pred = gtic(
             rating, n=N_TASK, m=N_WORKER, K=N_TASK_GROUPS, missing_val=-1).y_hat
         produced["GTIC"] = y_pred
+    if ENABLE["LFGP"]:
+        model_lfgp = LFGP_PAPER(lf_dim=N_TASK_GROUPS, n_worker_group=N_TASK_GROUPS, lambda1=1, lambda2=1)
+        model_lfgp._prescreen(rating)
+        model_lfgp._mc_fit(rating, scheme="ds", epsilon=1e-2, maxiter=MAXITER, verbose=0)
+        y_pred = model_lfgp._mc_infer(rating)[:, 1].astype(int)
+        produced["LFGP"] = y_pred
+
 
     # ---- evaluate everything the same way and record ----
     for name, y_pred in produced.items():
         scores = evaluate(y_true, y_pred, N_TASK_GROUPS)
+        if len(metrics[name]["cluster_acc"]) > i:   # already recorded from U
+            scores.pop("cluster_acc")
         for key, val in scores.items():
             metrics[name][key].append(val)
 
     # ---- persist after every run so a timeout can't lose finished runs ----
-    save_json(os.path.join(OUT_DIR, "metrics_raw.json"), metrics)
-    print(f"[run {i + 1}/{N_RUNS}] done; results saved to {OUT_DIR}")
-    
-    pd.DataFrame(removed_worker_records).to_csv(
-        os.path.join(OUT_DIR, "removed_workers.csv"),
-        index=False
-    )
+    if SAVE_RESULTS:
+        save_json(out_path("metrics_raw.json"), metrics)
+        pd.DataFrame(removed_worker_records).to_csv(
+            out_path("removed_workers.csv"), index=False)
+        print(f"[run {i + 1}/{N_RUNS}] done; results saved to {OUT_DIR}")
+    else:
+        print(f"[run {i + 1}/{N_RUNS}] done (SAVE_RESULTS off, nothing written)")
 
 # --------------------------------------------------------------------------- #
 #  summarize, print, and save
@@ -431,15 +465,18 @@ pd.set_option("display.width", 200, "display.max_columns", None)
 print("\n==== SUMMARY ====")
 print(summary_df)
 
-summary_df.to_csv(os.path.join(OUT_DIR, "summary.csv"))
-save_json(os.path.join(OUT_DIR, "summary.json"), summary_df.to_dict(orient="index"))
-save_json(os.path.join(OUT_DIR, "config.json"),
+if SAVE_RESULTS:
+    summary_df.to_csv(out_path("summary.csv"))
+save_json(out_path("summary.json"), summary_df.to_dict(orient="index"))
+save_json(out_path("config.json"),
           {"run_id": RUN_ID, "n_runs": N_RUNS, "maxiter": MAXITER,
            "enable": ENABLE, "bias_scheme": BIAS_SCHEME,
            "remove_global_lq": REMOVE_GLOBAL_LQ,
            "data_kw": DATA_KW})
 
 for _name in ("Eigen_L2", "Likelihood", "Likelihood2", "Eigen_L2_v2", "Eigen_Oracle"):
+    if not SAVE_RESULTS:
+        break
     if not ENABLE[_name] or not tier_lists[_name]["true"]:
         continue
     worker_agg = worker_diagnose_runs(
@@ -455,7 +492,8 @@ for _name in ("Eigen_L2", "Likelihood", "Likelihood2", "Eigen_L2_v2", "Eigen_Ora
 
 
 runtime = time.perf_counter() - start
-save_json(os.path.join(OUT_DIR, "runtime.json"),
+save_json(out_path("runtime.json"),
           {"runtime_sec": round(runtime, 1), "n_runs": N_RUNS,
            "sec_per_run": round(runtime / N_RUNS, 1)})
-print(f"\nRuntime: {runtime:.1f}s   |   all outputs in: {OUT_DIR}")
+print(f"\nRuntime: {runtime:.1f}s   |   "
+      + (f"all outputs in: {OUT_DIR}" if SAVE_RESULTS else "no outputs written"))
