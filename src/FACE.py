@@ -6,8 +6,8 @@ FACE.py -- loader for the Face Sentiment Identification dataset
 584 face images, 27 workers, 5,242 labels, 4 classes (balanced, 146 each).
 
 Expected files (relative to the project root):
-    data/face/face_answer.csv   columns: question, worker, answer
-    data/face/face_truth.csv    columns: question, truth
+    data/face_answer.csv   columns: question, worker, answer
+    data/face_truth.csv    columns: question, truth
 
 Returns the same tuple as get_DOG():
     rating        (n_label, 3) int array: [task_idx, worker_idx, label], all 0-based
@@ -21,7 +21,7 @@ import numpy as np
 import pandas as pd
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
-_DEFAULT_DIR = os.path.join(_HERE, "..", "data", "face")
+_DEFAULT_DIR = os.path.join(_HERE, "..", "data")
 
 
 def load_crowd_csv(answer_csv, truth_csv):

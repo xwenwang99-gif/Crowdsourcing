@@ -7,8 +7,8 @@ as distributed with Zhang et al., "Spectral Methods Meet EM" (github.com/zhangyu
 60 / 48). Fully dense: every worker labels every image.
 
 Expected files (labels already shifted from 1/2 to 0/1):
-    data/bird/bird_answer.csv   columns: question, worker, answer
-    data/bird/bird_truth.csv    columns: question, truth
+    data/bird_answer.csv   columns: question, worker, answer
+    data/bird_truth.csv    columns: question, truth
 
 Returns the same tuple as get_DOG() / get_FACE().
 """
@@ -17,7 +17,7 @@ import os
 from src.FACE import load_crowd_csv
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
-_DEFAULT_DIR = os.path.join(_HERE, "..", "data", "bird")
+_DEFAULT_DIR = os.path.join(_HERE, "..", "data")
 
 
 def get_BIRD(data_dir=_DEFAULT_DIR):
