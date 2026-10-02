@@ -1,0 +1,26 @@
+{
+  "run_id": "20260630_024508",
+  "n_runs": 100,
+  "maxiter": 100,
+  "enable": {
+    "Eigen_L2": true,
+    "DS": true,
+    "MV_HQ": 1,
+    "MV": 1,
+    "GLAD": 1,
+    "MultiSPA": 1,
+    "GTIC": 1
+  },
+  "data_kw": {
+    "n_task": 200,
+    "n_worker": 200,
+    "n_task_groups": 5,
+    "k": 3,
+    "sigma": 1.0,
+    "obs_prob": 1,
+    "hq_ratio": 0.3333333333333333,
+    "bias_ratio": 0.5,
+    "delta": 1,
+    "n_classes": 5
+  }
+}

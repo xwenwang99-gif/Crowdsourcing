@@ -1,0 +1,28 @@
+{
+  "run_id": "20260716_212745",
+  "n_runs": 10,
+  "maxiter": 100,
+  "enable": {
+    "Eigen_L2": 1,
+    "Likelihood": 1,
+    "DS": 1,
+    "MV_HQ": 0,
+    "MV": 0,
+    "GLAD": 0,
+    "MultiSPA": 0,
+    "GTIC": 0
+  },
+  "bias_scheme": "free2",
+  "data_kw": {
+    "n_task": 500,
+    "n_worker": 500,
+    "n_task_groups": 10,
+    "k": 3,
+    "sigma": 1.0,
+    "obs_prob": 1,
+    "hq_ratio": 0.3333333333333333,
+    "bias_ratio": 0.5,
+    "delta": 1,
+    "n_classes": 10
+  }
+}

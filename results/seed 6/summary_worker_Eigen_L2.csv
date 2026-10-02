@@ -1,0 +1,15 @@
+section,name,metric,mean,sd,ci_low,ci_high,n
+worker_tier,LQ,Precision,0.9328,0.0,0.9328,0.9328,1
+worker_tier,LQ,Recall,0.4692,0.0,0.4692,0.4692,1
+worker_tier,LQ,F1,0.6244,0.0,0.6244,0.6244,1
+worker_tier,HQ,Precision,0.0503,0.0,0.0503,0.0503,1
+worker_tier,HQ,Recall,0.3692,0.0,0.3692,0.3692,1
+worker_tier,HQ,F1,0.0886,0.0,0.0886,0.0886,1
+worker_tier,Biased,Precision,0.02,0.0,0.02,0.02,1
+worker_tier,Biased,Recall,0.12,0.0,0.12,0.12,1
+worker_tier,Biased,F1,0.0343,0.0,0.0343,0.0343,1
+worker_overall,Overall,accuracy,0.4485,0.0,0.4485,0.4485,1
+worker_overall,Overall,macro_f1,0.2491,0.0,0.2491,0.2491,1
+worker_overall,Overall,ari,0.0113,0.0,0.0113,0.0113,1
+worker_overall,Overall,biased_as_hq,0.32,0.0,0.32,0.32,1
+worker_overall,Overall,hq_as_biased,0.5385,0.0,0.5385,0.5385,1
