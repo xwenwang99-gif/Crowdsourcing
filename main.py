@@ -60,8 +60,8 @@ warnings.filterwarnings("ignore")
 # --------------------------------------------------------------------------- #
 #  configuration
 # --------------------------------------------------------------------------- #
-N_RUNS        = 1
-MAXITER       = 1
+N_RUNS        = 10
+MAXITER       = 100
 N_TASK        = 200
 N_WORKER      = 400
 N_TASK_GROUPS = 5
@@ -93,7 +93,8 @@ DRAW_HQ_VOTES = 0
 REMOVE_GLOBAL_LQ = False
 SAVE_RESULTS = True     # False: no results/run_<timestamp>/ folder, nothing written to disk
 
-DOG = False
+DATASET = "synthetic"
+REAL_DATA = DATASET != "synthetic"   # real data has no true worker tiers / latent factors
 METHODS = [m for m, on in ENABLE.items() if on]
 
 DATA_KW = dict(                       # getdata_biased arguments, kept in one place
@@ -208,10 +209,12 @@ tier_lists = {name: {"true": [], "pred": []}
               for name in ("Eigen_L2", "Likelihood", "Likelihood2", "Eigen_L2_v2", "Eigen_Oracle",)}
 for i in range(N_RUNS):
     np.random.seed(i)
-    if DOG == False:
+    if DATASET == "synthetic":
         rating, y_true, worker_label, R_obs, task_lf, worker_lf = getdata_biased(**DATA_KW)
     else:
-        rating, y_true, R_obs, N_TASK, N_WORKER, N_TASK_GROUPS = get_DOG()
+        loader = {"dog": get_DOG, "face": get_FACE, "bird": get_BIRD}[DATASET]
+        rating, y_true, R_obs, N_TASK, N_WORKER, N_TASK_GROUPS = loader()
+        worker_label = task_lf = worker_lf = None   # no ground-truth worker tiers
 
     # -----------------------
     # Same fitting seed
@@ -240,7 +243,6 @@ for i in range(N_RUNS):
         A, B, U, V, clusters_np = model._mc_fit(
             rating, key=y_true, scheme="ds", epsilon=1e-5,
             maxiter=MAXITER, verbose=1,
-            bias_scheme=BIAS_SCHEME,
         )
         pred_group = U.astype(int)
         cluster_acc = model.task_acc(pred_group, y_true)
@@ -268,18 +270,19 @@ for i in range(N_RUNS):
             MIN_COVERAGE=5, return_spectral=True,
         )
         
-        print_spectral_worker_comparison(
-            spectral,
-            worker_label,
-            pred_group,
-            y_true,
-        )
+        if not REAL_DATA:
+            print_spectral_worker_comparison(
+                spectral,
+                worker_label,
+                pred_group,
+                y_true,
+            )
 
-        yt_tier, yp_tier = build_tier_vectors(
-            worker_label, hq_workers_pred, biased_workers_pred,
-            pred_group, y_true, N_TASK_GROUPS)
-        tier_lists["Eigen_L2"]["true"].append(yt_tier)
-        tier_lists["Eigen_L2"]["pred"].append(yp_tier)
+            yt_tier, yp_tier = build_tier_vectors(
+                worker_label, hq_workers_pred, biased_workers_pred,
+                pred_group, y_true, N_TASK_GROUPS)
+            tier_lists["Eigen_L2"]["true"].append(yt_tier)
+            tier_lists["Eigen_L2"]["pred"].append(yp_tier)
 
         hq_vote_report(rating, pred_group, hq_workers_pred, N_TASK_GROUPS,
                OUT_DIR, f"Eigen_L2_run{i}",
@@ -291,7 +294,7 @@ for i in range(N_RUNS):
             V_spec = spectral_to_V(hq_workers_pred, biased_workers_pred,
                                    N_WORKER, N_TASK_GROUPS)            
             
-            clusters_spec = tier_centers_in_lf_space(B, V_spec, bias_scheme=BIAS_SCHEME)
+            clusters_spec = tier_centers_in_lf_space(B, V_spec, )
             if REMOVE_GLOBAL_LQ:
                 warm_worker_mask = spectral["warm_worker_mask"]
             else:
@@ -321,7 +324,6 @@ for i in range(N_RUNS):
             A2, B2, U2, V2, clusters2 = model2._mc_fit(
                 rating, key=y_true, scheme="warm", epsilon=1e-5,
                 maxiter=MAXITER, verbose=0,
-                bias_scheme=BIAS_SCHEME,
                 A_init=A, B_init=B,         # the first fit's grouping
                 U_init=pred_group,
                 V_init=V_spec,              # the SPECTRAL tiering
@@ -345,21 +347,22 @@ for i in range(N_RUNS):
                 MIN_COVERAGE=5, return_spectral=False,
             )
     
-            yt_tier, yp_tier = build_tier_vectors(
-                worker_label, hq_workers_pred2, biased_workers_pred2,
-                pred_group2, y_true, N_TASK_GROUPS)
+            if not REAL_DATA:
+                yt_tier, yp_tier = build_tier_vectors(
+                    worker_label, hq_workers_pred2, biased_workers_pred2,
+                    pred_group2, y_true, N_TASK_GROUPS)
             
-            hq2 = [np.where(V2[:, g] == 1)[0] for g in range(N_TASK_GROUPS)]
-            bi2 = [np.where(V2[:, g] == 2)[0] for g in range(N_TASK_GROUPS)]
-            yt_lik2, yp_lik2 = build_tier_vectors(
-                worker_label, hq2, bi2, pred_group2, y_true, N_TASK_GROUPS)
-            tier_lists["Likelihood2"]["true"].append(yt_lik2)
-            tier_lists["Likelihood2"]["pred"].append(yp_lik2)
-            
-            # Eigen_L2_v2 keeps the spectral-pass vectors:
-            tier_lists["Eigen_L2_v2"]["true"].append(yt_tier)
-            tier_lists["Eigen_L2_v2"]["pred"].append(yp_tier)
-    
+                hq2 = [np.where(V2[:, g] == 1)[0] for g in range(N_TASK_GROUPS)]
+                bi2 = [np.where(V2[:, g] == 2)[0] for g in range(N_TASK_GROUPS)]
+                yt_lik2, yp_lik2 = build_tier_vectors(
+                    worker_label, hq2, bi2, pred_group2, y_true, N_TASK_GROUPS)
+                tier_lists["Likelihood2"]["true"].append(yt_lik2)
+                tier_lists["Likelihood2"]["pred"].append(yp_lik2)
+                
+                # Eigen_L2_v2 keeps the spectral-pass vectors:
+                tier_lists["Eigen_L2_v2"]["true"].append(yt_tier)
+                tier_lists["Eigen_L2_v2"]["pred"].append(yp_tier)
+        
             hq_vote_report(rating, pred_group2, hq_workers_pred2, N_TASK_GROUPS,
                    OUT_DIR, f"Eigen_L2_v2_run{i}",
                    y_true=y_true, draw=bool(DRAW_HQ_VOTES) and SAVE_RESULTS)
@@ -370,16 +373,18 @@ for i in range(N_RUNS):
             metrics["Likelihood2"]["cluster_acc"].append(cluster_acc2)
             produced["Likelihood2"] = np.nan_to_num(y_pred2, nan=-1).astype(int)
             
-            #B_true = np.transpose(worker_lf, (1, 0, 2))
-            clusters_true = true_tier_centers(worker_lf, np.argmax(worker_label, axis=2))
-            plot_worker_lf_pca(
-                [worker_lf, B, B2],
-                worker_tier_true=np.argmax(worker_label, axis=2),
-                clusters_list=[clusters_true, clusters_np, clusters2],
-                titles=("ground truth", "fit 1 (cold)", "fit 2 (warm)"),
-                path=out_path(f"worker_lf_pca_run{i}.png"),
-                draw=bool(DRAW_HQ_VOTES),
-            )
+            
+            if not REAL_DATA:
+                #B_true = np.transpose(worker_lf, (1, 0, 2))
+                clusters_true = true_tier_centers(worker_lf, np.argmax(worker_label, axis=2))
+                plot_worker_lf_pca(
+                    [worker_lf, B, B2],
+                    worker_tier_true=np.argmax(worker_label, axis=2),
+                    clusters_list=[clusters_true, clusters_np, clusters2],
+                    titles=("ground truth", "fit 1 (cold)", "fit 2 (warm)"),
+                    path=out_path(f"worker_lf_pca_run{i}.png"),
+                    draw=bool(DRAW_HQ_VOTES),
+                )
             
             plot_loss_trajectory(
                 model.loss_history, model2.loss_history,
@@ -400,12 +405,12 @@ for i in range(N_RUNS):
             LABEL_MODE="task", verbose=False,
             MIN_COVERAGE=5, return_spectral=False,
         )
-
-        yt_tier, yp_tier = build_tier_vectors(
-            worker_label, hq_or, biased_or,
-            oracle_group, y_true, N_TASK_GROUPS)
-        tier_lists["Eigen_Oracle"]["true"].append(yt_tier)
-        tier_lists["Eigen_Oracle"]["pred"].append(yp_tier)
+        if not REAL_DATA:
+            yt_tier, yp_tier = build_tier_vectors(
+                worker_label, hq_or, biased_or,
+                oracle_group, y_true, N_TASK_GROUPS)
+            tier_lists["Eigen_Oracle"]["true"].append(yt_tier)
+            tier_lists["Eigen_Oracle"]["pred"].append(yp_tier)
 
         hq_vote_report(rating, oracle_group, hq_or, N_TASK_GROUPS,
                        OUT_DIR, f"Eigen_Oracle_run{i}",
@@ -508,7 +513,7 @@ if SAVE_RESULTS:
 save_json(out_path("summary.json"), summary_df.to_dict(orient="index"))
 save_json(out_path("config.json"),
           {"run_id": RUN_ID, "n_runs": N_RUNS, "maxiter": MAXITER,
-           "enable": ENABLE, "bias_scheme": BIAS_SCHEME,
+           "enable": ENABLE, 
            "remove_global_lq": REMOVE_GLOBAL_LQ,
            "data_kw": DATA_KW})
 
@@ -522,7 +527,7 @@ for _name in ("Eigen_L2", "Likelihood", "Likelihood2", "Eigen_L2_v2", "Eigen_Ora
     plot_tier_confusion(                           # the heatmap (one file per method)
         worker_agg["confusion_rownorm"], annot_counts=worker_agg["confusion_sum"],
         path=os.path.join(OUT_DIR, f"worker_confusion_{_name}.png"),
-        title=f"Worker-tier recovery ({_name}, {BIAS_SCHEME})")
+        title=f"Worker-tier recovery ({_name})")
 
     build_worker_summary(worker_agg).to_csv(
         os.path.join(OUT_DIR, f"summary_worker_{_name}.csv"), index=False)

@@ -8,8 +8,6 @@ from src.dawid_skene_model import DawidSkeneModel
 import numpy as np
 import numpy_indexed as npi
 from sklearn.cluster import KMeans
-from itertools import permutations
-from sklearn.metrics import accuracy_score
 import matplotlib.pyplot as plt
 from scipy.stats import mode
 from collections import Counter
@@ -82,65 +80,36 @@ class LFGP():
 
         return label
     
+
     def _init_worker_member_acc(self, data, label):
+        """Initialize worker tiers as 0=LQ and 1=HQ using within-group accuracy."""
         worker = np.unique(data[:, 1])
-        acc        = np.zeros((self.n_worker, self.n_task_group))
-        bias_score = np.zeros((self.n_worker, self.n_task_group))
-        member     = np.zeros((self.n_worker, self.n_task_group), dtype=int)
-    
+        acc = np.zeros((self.n_worker, self.n_task_group))
+        member = np.zeros((self.n_worker, self.n_task_group), dtype=int)
+
         for t_group in range(self.n_task_group):
             for i in range(self.n_worker):
                 crowd_w = data[
                     (data[:, 1] == worker[i]) &
                     (label[data[:, 0].astype(int), 1] == t_group)
                 ]
+
                 if crowd_w.shape[0] == 0:
-                    acc[i, t_group]        = 0
-                    bias_score[i, t_group] = 0
+                    acc[i, t_group] = 0
                     continue
-    
-                task_w        = crowd_w[:, 0].astype(int)
-                true_labels   = label[np.isin(label[:, 0], task_w), 1]
+
+                task_w = crowd_w[:, 0].astype(int)
+                reference_labels = label[np.isin(label[:, 0], task_w), 1]
                 worker_labels = crowd_w[:, 2]
-    
-                # Accuracy: fraction of correct labels
-                acc[i, t_group] = np.mean(true_labels == worker_labels)
-    
-                # Bias score: among incorrect responses, how concentrated
-                # are they on a single wrong label?
-                # A purely biased worker scores 1.0, a random worker scores ~1/K
-                wrong_mask = (true_labels != worker_labels)
-                wrong_labels = worker_labels[wrong_mask]
-                if len(wrong_labels) > 0:
-                    counts = np.bincount(wrong_labels.astype(int),
-                                         minlength=self.n_task_group)
-                    bias_score[i, t_group] = counts.max() / len(wrong_labels)
-                else:
-                    # All correct — HQ worker, bias score irrelevant
-                    bias_score[i, t_group] = 0
-    
+
+                acc[i, t_group] = np.mean(reference_labels == worker_labels)
+
         for t_group in range(self.n_task_group):
             median_acc = np.median(acc[:, t_group])
-    
-            for i in range(self.n_worker):
-                if acc[i, t_group] > median_acc:
-                    # Above median accuracy → HQ
-                    member[i, t_group] = 1
-                else:
-                    # Below median — use bias score to distinguish
-                    # biased (concentrated errors) from LQ (random errors)
-                    median_bias = np.median(
-                        bias_score[acc[:, t_group] <= median_acc, t_group]
-                    )
-                    if bias_score[i, t_group] > median_bias:
-                        member[i, t_group] = 2   # biased
-                    else:
-                        member[i, t_group] = 0   # LQ
-    
+            member[:, t_group] = (acc[:, t_group] > median_acc).astype(int)
+
         return member
 
-
-    
     def _init_mc_params(self, data, task_lf, worker_lf, scheme, U_init=None, V_init=None, clusters_init=None):
 
         # initialize model parameters for multicategory crowdsourcing
@@ -193,6 +162,12 @@ class LFGP():
                 )
             U = np.asarray(U_init).astype(int).copy()
             V = np.asarray(V_init).astype(int).copy()
+
+            if not np.all(np.isin(V, [0, 1])):
+                raise ValueError(
+                    "HQ/LQ model requires warm-start V_init to contain only 0=LQ and 1=HQ."
+                )
+
             task_member = np.column_stack([np.arange(self.n_task), U]).astype(float)
             A = task_lf.copy()
             B = worker_lf.copy()
@@ -217,9 +192,8 @@ class LFGP():
             # Task grouping is NOT oracle.
             # Start tasks exactly as the ordinary likelihood fit does.
             
-            V_init = np.argmax(
-               V_init,
-               axis=2,
+            V_init = (
+                V_init == 1
             ).astype(int)
             task_member = self._init_task_member_ds(data)
         
@@ -242,6 +216,11 @@ class LFGP():
                       
         U = U.astype(int)
         V = V.astype(int)
+
+        if not np.all(np.isin(V, [0, 1])):
+            raise ValueError(
+                "HQ/LQ model requires worker memberships in {0, 1}."
+            )
 
         self.A, self.B = A, B
         self.U, self.V = U, V
@@ -275,41 +254,70 @@ class LFGP():
         return lf
     
 
-    def _init_worker_lf_gp(self, member, scale=(0.0, 1.0, 2.0)):
-        """scale = (LQ, biased, HQ) centroid norms, matching the
-        smallest/middle/largest convention in new_kmeans_gpu_3cluster."""
+
+    def _init_worker_lf_gp(self, member, hq_scale=2.0):
+        """
+        Initialize worker latent factors for a two-tier model:
+            0 = LQ, centered at the origin
+            1 = HQ, centered at a nonzero group-specific direction
+        """
+        member = np.asarray(member, dtype=int)
+        if not np.all(np.isin(member, [0, 1])):
+            raise ValueError("HQ/LQ model requires worker memberships in {0, 1}.")
+
         lf = np.zeros((self.n_worker, self.n_task_group, self.lf_dim))
+
         for t_group in range(self.n_task_group):
-            d = np.random.randn(2, self.lf_dim)
-            d /= np.linalg.norm(d, axis=1, keepdims=True)
-            centroids = {
-                0: np.zeros(self.lf_dim),        # LQ  -> origin (matches free2)
-                2: scale[1] * d[0],              # biased -> middle norm
-                1: scale[2] * d[1],              # HQ  -> largest norm
-            }
+            direction = np.random.randn(self.lf_dim)
+            direction /= np.linalg.norm(direction) + 1e-12
+            hq_centroid = hq_scale * direction
+
             for i in range(self.n_worker):
-                c = centroids[int(member[i, t_group])]
-                lf[i, t_group, :] = np.random.multivariate_normal(c, 0.2 * np.eye(self.lf_dim))
+                centroid = (
+                    np.zeros(self.lf_dim)
+                    if member[i, t_group] == 0
+                    else hq_centroid
+                )
+                lf[i, t_group, :] = np.random.multivariate_normal(
+                    centroid,
+                    0.2 * np.eye(self.lf_dim),
+                )
+
         return lf
-    
-    def worker_centers_from_V(self, B, V, n_task_group, bias_scheme="free2", worker_active_t=None):
+
+    def worker_centers_from_V(self, B, V, n_task_group, worker_active_t=None):
+        """
+        Construct two worker centers per task group:
+            center 0 = fixed LQ center at the origin
+            center 1 = mean HQ latent factor
+        """
         if worker_active_t is None:
-            worker_active_t = torch.ones(B.shape[0], dtype=torch.bool, device=B.device)
-    
-        clusters = torch.zeros(3, self.lf_dim, n_task_group, device=B.device, dtype=B.dtype)
-    
+            worker_active_t = torch.ones(
+                B.shape[0],
+                dtype=torch.bool,
+                device=B.device,
+            )
+
+        clusters = torch.zeros(
+            2,
+            self.lf_dim,
+            n_task_group,
+            device=B.device,
+            dtype=B.dtype,
+        )
+
         for g in range(n_task_group):
-            for tier in [0, 1, 2]:
-                mask = (V[:, g] == tier) & worker_active_t
-    
-                if mask.any():
-                    if tier == 0 and bias_scheme == "free2":
-                        clusters[0, :, g] = 0.0
-                    else:
-                        clusters[tier, :, g] = B[mask, g, :].mean(0)
-    
+            hq_mask = (V[:, g] == 1) & worker_active_t
+
+            # LQ center remains fixed at the origin.
+            clusters[0, :, g] = 0.0
+
+            if hq_mask.any():
+                clusters[1, :, g] = B[hq_mask, g, :].mean(0)
+
         return clusters
-    
+
+
     def mc_loss_func_gpu(
         self,
         data_t,
@@ -333,26 +341,26 @@ class LFGP():
                 dtype=torch.bool,
                 device=B.device,
             )
-    
+
         labels = data_t[:, 2].long()
         A_obs = A[task_id]
-    
+
         # ==================================================
         # Multinomial label likelihood
         # ==================================================
         B_obs = B[worker_id]                         # (R, C, k)
-    
+
         logits = torch.einsum(
             "rk,rck->rc",
             A_obs,
             B_obs,
         )
-    
+
         log_probs = torch.log_softmax(
             logits,
             dim=1,
         )
-    
+
         loss = -log_probs[
             torch.arange(
                 len(labels),
@@ -360,7 +368,7 @@ class LFGP():
             ),
             labels,
         ].sum()
-    
+
         # ==================================================
         # Penalty 1: task grouping
         # ==================================================
@@ -368,65 +376,52 @@ class LFGP():
             0.0,
             device=DEVICE,
         )
-    
+
         for g in torch.unique(U):
             mask = U == g
             centroid = A[mask].mean(0)
-    
+
             penalty1 += (
                 lambda1
                 * torch.sum(
                     (A[mask] - centroid) ** 2
                 )
             )
-    
+
         # ==================================================
-        # Penalty 2: worker grouping
+        # Penalty 2: worker grouping (0=LQ, 1=HQ)
         # ==================================================
         penalty2 = torch.tensor(
             0.0,
             device=DEVICE,
         )
-    
+
         for g in range(n_task_group):
-    
             mask0 = (V[:, g] == 0) & worker_active_t
             mask1 = (V[:, g] == 1) & worker_active_t
-            mask2 = (V[:, g] == 2) & worker_active_t
-    
+
             if mask0.any():
-                center0 = clusters[0, :, g]
                 penalty2 += (
                     lambda2_0
                     * torch.sum(
-                        (B[mask0, g, :] - center0) ** 2
+                        (B[mask0, g, :] - clusters[0, :, g]) ** 2
                     )
                 )
-    
+
             if mask1.any():
-                center1 = clusters[1, :, g]
                 penalty2 += (
                     lambda2_1
                     * torch.sum(
-                        (B[mask1, g, :] - center1) ** 2
+                        (B[mask1, g, :] - clusters[1, :, g]) ** 2
                     )
                 )
-    
-            if mask2.any():
-                center2 = clusters[2, :, g]
-                penalty2 += (
-                    lambda2_1
-                    * torch.sum(
-                        (B[mask2, g, :] - center2) ** 2
-                    )
-                )
-    
+
         return (
             loss
             + penalty1
             + penalty2
         ).item()
-    
+
     def comp_centroid_gpu(self,A, B, U, V, n_task_group):
         """
         A : (n_task, k)
@@ -522,6 +517,7 @@ class LFGP():
         return A
 
     
+
     def multinomial_reg2_batched(
         self,
         B,
@@ -538,82 +534,76 @@ class LFGP():
     ):
         """
         Update worker latent factors B under the multinomial label likelihood.
-    
-        B[w] has shape (C, k), containing one class-specific latent vector
-        for each response category.
+
+        Worker tiers are binary:
+            0 = LQ
+            1 = HQ
         """
-    
         n_worker = B.shape[0]
         n_classes = B.shape[1]
-    
+
         if n_classes != n_task_group:
             raise ValueError(
                 "Current implementation assumes n_classes == n_task_group."
             )
-    
+
         for w in range(n_worker):
-    
             task_idx, obs_labels = obs_idx_per_worker[w]
-    
+
             if len(task_idx) == 0:
                 continue
-    
+
             A = A_all[task_idx]          # (M_w, k)
             Y = obs_labels.long()        # (M_w,)
-    
+
             # Update all class-specific worker factors together.
             beta = B[w].clone()          # (C, k)
-    
+
             for _ in range(max_iter):
-    
-                # --------------------------------------------
-                # Multinomial likelihood gradient
-                # --------------------------------------------
                 logits = A @ beta.T      # (M_w, C)
                 prob = torch.softmax(
                     logits,
                     dim=1,
                 )
-    
+
                 one_hot = torch.zeros_like(prob)
                 one_hot.scatter_(
                     1,
                     Y.unsqueeze(1),
                     1.0,
                 )
-    
+
                 grad = (
                     (prob - one_hot).T @ A
                 )                        # (C, k)
-    
-                # --------------------------------------------
-                # Worker-group penalty gradient
-                # --------------------------------------------
+
+                # Add the two-tier worker penalty gradient.
                 for c in range(n_classes):
-    
                     worker_tier = int(V[w, c].item())
-    
+
                     if worker_tier == 0:
                         lambd = lambda2_0
-    
-                    elif worker_tier in (1, 2):
+                        centroid = clusters[0, :, c]
+                    elif worker_tier == 1:
                         lambd = lambda2_1
-    
+                        centroid = clusters[1, :, c]
                     else:
                         raise ValueError(
-                            f"Unknown worker tier {worker_tier}"
+                            f"HQ/LQ model requires worker tier 0 or 1, got {worker_tier}."
                         )
-    
-                    centroid = clusters[worker_tier,:,c,]
-                    grad[c] += (2 * lambd* (beta[c] - centroid))
+
+                    grad[c] += (
+                        2 * lambd
+                        * (beta[c] - centroid)
+                    )
 
                 if torch.linalg.norm(grad) <= tol:
                     break
-    
+
                 beta = beta - lr * grad
-    
+
             B[w] = beta
-    
+
         return B
 
     def label_swap(self, Grp_cur, Grp_prev):
@@ -635,121 +625,85 @@ class LFGP():
 
         return mapping[Grp_cur]
         
-    def new_kmeans_gpu_3cluster(self, X, lf_dim, n_worker, max_iter=300, tol=1e-4,
-                            bias_scheme="free2", clusters_init=None):
-        if clusters_init is not None:
-            centers = clusters_init.clone().to(device=DEVICE, dtype=X.dtype)
-            if tuple(centers.shape) != (3, lf_dim):
-                raise ValueError(f"clusters_init has shape {tuple(centers.shape)}; "
-                                 f"expected {(3, lf_dim)}.")
-            if bias_scheme == "free2":
-                centers[0] = 0.0
-    
-        if clusters_init is None:
-            centers = torch.zeros(3, lf_dim, device=DEVICE)
-            norms = torch.linalg.norm(X, dim=1)
-            centers[1] = X[torch.argmax(norms)]
-            proj = (X @ centers[1]) / (torch.linalg.norm(centers[1]) ** 2 + 1e-12)
-            X_orth = X - proj.unsqueeze(1) * centers[1].unsqueeze(0)
-            centers[2] = X[torch.argmax(torch.linalg.norm(X_orth, dim=1))]
-            if bias_scheme == "free3":
-                centers[0] = X[torch.argmin(norms)]
-    
-        # ── Lloyd loop: runs in BOTH cases ──
-        labels = torch.zeros(n_worker, dtype=torch.long, device=DEVICE)
-        for _ in range(max_iter):
-            diff = X.unsqueeze(1) - centers.unsqueeze(0)
-            new_labels = torch.argmin(torch.linalg.norm(diff, dim=2), dim=1)
-    
-            new_centers = centers.clone()
-            tiers = (0, 1, 2) if bias_scheme == "free3" else (1, 2)
-            for tier in tiers:
-                pts = X[new_labels == tier]
-                if len(pts) > 0:
-                    new_centers[tier] = pts.mean(0)
-    
-            converged = bool(torch.all(torch.abs(new_centers - centers) < tol))
-            centers, labels = new_centers, new_labels
-            if converged:
-                break
-    
-        return labels, centers
 
-    def relabel_worker_clusters_signed(
+    def new_kmeans_gpu_2cluster(
         self,
-        labels,
-        centers,
-        task_direction,
+        X,
+        lf_dim,
+        n_worker,
+        max_iter=300,
+        tol=1e-4,
+        clusters_init=None,
     ):
         """
-        Relabel three worker clusters as:
+        Two-cluster KMeans for worker factors:
+            cluster 0 = LQ, fixed at the origin
+            cluster 1 = HQ, freely estimated
+        """
+        if clusters_init is not None:
+            centers = clusters_init.clone().to(
+                device=DEVICE,
+                dtype=X.dtype,
+            )
+            if tuple(centers.shape) != (2, lf_dim):
+                raise ValueError(
+                    f"clusters_init has shape {tuple(centers.shape)}; "
+                    f"expected {(2, lf_dim)}."
+                )
+            centers[0] = 0.0
+        else:
+            centers = torch.zeros(
+                2,
+                lf_dim,
+                device=DEVICE,
+                dtype=X.dtype,
+            )
+            norms = torch.linalg.norm(X, dim=1)
+            centers[1] = X[torch.argmax(norms)]
+
+        labels = torch.zeros(
+            n_worker,
+            dtype=torch.long,
+            device=DEVICE,
+        )
+
+        for _ in range(max_iter):
+            diff = X.unsqueeze(1) - centers.unsqueeze(0)
+            new_labels = torch.argmin(
+                torch.linalg.norm(diff, dim=2),
+                dim=1,
+            )
+
+            new_centers = centers.clone()
+            new_centers[0] = 0.0
+
+            hq_points = X[new_labels == 1]
+            if len(hq_points) > 0:
+                new_centers[1] = hq_points.mean(0)
+
+            converged = bool(
+                torch.all(
+                    torch.abs(new_centers - centers) < tol
+                )
+            )
+
+            centers, labels = new_centers, new_labels
+
+            if converged:
+                break
+
+        return labels, centers
+
+    def _mc_fit(self, data, key, scheme="mv", maxiter=50, epsilon=1e-5, verbose=0,
+                A_init=None, B_init=None, U_init=None, V_init=None,
+                clusters_init=None, worker_active_mask=None):
+        """
+        Fit the latent-factor crowdsourcing model with two worker tiers:
             0 = LQ
             1 = HQ
-            2 = biased
-    
-        HQ and biased are distinguished using signed alignment with the
-        task-group direction, rather than center norm alone.
-        """
-        task_direction = task_direction / (
-            torch.linalg.norm(task_direction) + 1e-12
-        )
-    
-        center_norms = torch.linalg.norm(centers, dim=1)
-    
-        # LQ should be closest to the origin
-        lq_old = int(torch.argmin(center_norms).item())
-    
-        remaining = [
-            c for c in range(3)
-            if c != lq_old
-        ]
-    
-        # Signed projection onto the task-group direction
-        signed_scores = centers @ task_direction
-    
-        # Most positively aligned cluster = HQ
-        hq_old = max(
-            remaining,
-            key=lambda c: float(signed_scores[c].item()),
-        )
-    
-        # The other structured cluster = biased
-        biased_old = next(
-            c for c in remaining
-            if c != hq_old
-        )
-    
-        # old cluster ID -> semantic tier ID
-        mapping = torch.empty(
-            3,
-            dtype=torch.long,
-            device=labels.device,
-        )
-    
-        mapping[lq_old] = 0
-        mapping[hq_old] = 1
-        mapping[biased_old] = 2
-    
-        labels_new = mapping[labels.long()]
-    
-        centers_new = torch.empty_like(centers)
-        centers_new[0] = centers[lq_old]
-        centers_new[1] = centers[hq_old]
-        centers_new[2] = centers[biased_old]
-    
-        return labels_new, centers_new
-    
-    def _mc_fit(self, data, key, scheme="mv", maxiter=50, epsilon=1e-5, verbose=0, 
-                bias_scheme="free2", A_init = None, B_init = None, U_init=None, V_init=None, clusters_init=None, worker_active_mask=None):
-        """
-        GPU-accelerated drop-in replacement for _mc_fit.
-        self must have: A, B, U, V, lf_dim, n_task, n_worker, n_task_group,
-                        lambda1, lambda2_0, lambda2_1, n_record,
-                        _init_mc_params, label_swap
-        bias_scheme: passed to new_kmeans_gpu_3cluster — "free2" keeps the LQ
-        penalty center fixed at the origin with two free centers; "free3" lets
-        all three centers move freely. In both cases groups are identified by
-        center-norm magnitude (smallest=LQ, largest=HQ, middle=biased).
+
+        The LQ worker center is fixed at the origin; the HQ center is estimated
+        separately within each task group.
         """
         acc_with_iter = []
         self._init_mc_params(data, A_init, B_init, scheme=scheme, U_init=U_init, V_init=V_init, clusters_init=clusters_init)
@@ -768,9 +722,8 @@ class LFGP():
         # Removed workers are permanently treated as LQ during this fit.
         self.V[~worker_active_mask, :] = 0
         
-        # Since free2 fixes the LQ center at zero, keep removed workers at the origin.
-        if bias_scheme == "free2":
-            self.B[~worker_active_mask, :, :] = 0.0
+        # The LQ center is fixed at zero, so removed workers stay at the origin.
+        self.B[~worker_active_mask, :, :] = 0.0
         
         self.U = self.U.astype(int)
         self.V = self.V.astype(int)
@@ -822,8 +775,7 @@ class LFGP():
             B,
             V,
             n_task_group,
-            bias_scheme=bias_scheme,
-            worker_active_t = worker_active_t
+            worker_active_t=worker_active_t,
         )
         loss_prev = float("inf")
         loss_history = []
@@ -885,11 +837,11 @@ class LFGP():
             # ── Update V via GPU KMeans ──
             if scheme == "worker_oracle":
                 clusters = self.worker_centers_from_V(
-                    B, 
+                    B,
                     V,
                     n_task_group,
-                    bias_scheme=bias_scheme,
-                 )
+                    worker_active_t=worker_active_t,
+                )
             else:
 
                 # Normal estimated-worker case
@@ -897,21 +849,16 @@ class LFGP():
                     # Cluster only workers retained after the spectral screen.
                     B_slice = B[active_idx, t, :]
                 
-                    if len(active_idx) < 3:
+                    if len(active_idx) < 2:
                         V_cur[:, t] = 0
                         continue
                 
-                    labels, centers = self.new_kmeans_gpu_3cluster(
-                        B_slice, lf_dim, len(active_idx),
-                        bias_scheme=bias_scheme,
-                        clusters_init=clusters[:, :, t]
+                    labels, centers = self.new_kmeans_gpu_2cluster(
+                        B_slice,
+                        lf_dim,
+                        len(active_idx),
+                        clusters_init=clusters[:, :, t],
                     )
-                
-                    task_mask = U == t
-                
-                    if task_mask.any():
-                        task_direction = A[task_mask].mean(dim=0)
-                        labels, centers = self.relabel_worker_clusters_signed(labels, centers, task_direction)
                 
                     # Removed workers stay LQ permanently.
                     V_cur[:, t] = 0
@@ -977,20 +924,51 @@ class LFGP():
         print("Oracle-centroid acc:",self.oracle_centroid_task_acc(self.A,key,self.n_task_group))         
         return self.A, self.B, self.U, self.V, clusters_np
     
+
     def calculate_worker_accuracy(self, worker_label):
+        """
+        Evaluate HQ/LQ recovery.
+
+        Ground-truth labels are binarized as HQ=1 and non-HQ=0, so a simulation
+        may contain additional worker types without adding those types to the model.
+        """
+        worker_label = np.asarray(worker_label)
+
+        if worker_label.ndim == 3:
+            worker_label = np.argmax(worker_label, axis=2)
+
+        worker_label = (worker_label == 1).astype(int)
 
         worker_accuracy = np.zeros((self.n_task_group, 4))
+
         for t in range(self.n_task_group):
-            worker_accuracy[t, 0] = np.mean(self.V[:, t] == worker_label[:, t])
-            FP = np.sum((worker_label[:, t] == 0) & (self.V[:, t] == 1))
-            TN = np.sum((worker_label[:, t] == 0) & (self.V[:, t] == 0))
-            TP = np.sum((worker_label[:, t] == 1) & (self.V[:, t] == 1))
-            FN = np.sum((worker_label[:, t] == 1) & (self.V[:, t] == 0))
-            worker_accuracy[t, 1] = FP/(FP+TN) #False Positive
-            worker_accuracy[t, 2] = TP/(TP+FN) #True Postive
-            worker_accuracy[t, 3] = TP/(TP+FP) #Precision
+            worker_accuracy[t, 0] = np.mean(
+                self.V[:, t] == worker_label[:, t]
+            )
+
+            FP = np.sum(
+                (worker_label[:, t] == 0)
+                & (self.V[:, t] == 1)
+            )
+            TN = np.sum(
+                (worker_label[:, t] == 0)
+                & (self.V[:, t] == 0)
+            )
+            TP = np.sum(
+                (worker_label[:, t] == 1)
+                & (self.V[:, t] == 1)
+            )
+            FN = np.sum(
+                (worker_label[:, t] == 1)
+                & (self.V[:, t] == 0)
+            )
+
+            worker_accuracy[t, 1] = FP / (FP + TN) if (FP + TN) > 0 else np.nan
+            worker_accuracy[t, 2] = TP / (TP + FN) if (TP + FN) > 0 else np.nan
+            worker_accuracy[t, 3] = TP / (TP + FP) if (TP + FP) > 0 else np.nan
+
         return worker_accuracy
-            
+
     def _mc_infer(self, data):
         new_U = np.zeros(self.U.shape) - 1
         for t in range(self.n_task_group):
@@ -1069,87 +1047,22 @@ class LFGP():
         membership = self.label_swap(data, key)
         return np.mean(membership == key)
     
-    def calculate_likelihood_worker_scores(self,
-                                       clusters,
-                                       temperature=1.0,
-                                       priors=None,
-                                       standardize=True,
-                                       eps=1e-12):
-        '''
-    Calculate likelihood-side worker scores from the learned worker embeddings.
 
-    This function converts the likelihood embedding B[j, g, :] into a scalar
-    HQ score for each worker-task-group pair, with the SAME 2D shape as the
-    spectral score matrix:
+    def calculate_likelihood_worker_scores(
+        self,
+        clusters,
+        temperature=1.0,
+        priors=None,
+        standardize=True,
+        eps=1e-12,
+    ):
+        """
+        Convert learned worker embeddings into soft HQ/LQ scores.
 
-        likelihood_score[j, g]
-
-    Main returned score:
-        score[j, g] = q_L(W_jg = HQ | B[j,g,:])
-
-    where q_L is a softmax over distance-based log-evidence to the three
-    likelihood centers:
-        tier 0 = LQ
-        tier 1 = HQ
-        tier 2 = biased
-
-    Parameters
-    ----------
-    clusters : np.ndarray
-        Cluster centers returned by _mc_fit.
-        Expected shape: (3, lf_dim, n_task_group).
-        clusters[0, :, g] = LQ center, usually zero
-        clusters[1, :, g] = HQ center
-        clusters[2, :, g] = biased center
-
-    temperature : float
-        Softmax temperature for distance evidence.
-        Smaller temperature -> harder membership.
-        Larger temperature -> softer membership.
-
-    priors : None or array-like
-        Optional prior probabilities for tiers.
-        Shape can be (3,) or (n_task_group, 3).
-        If None, uniform priors are used.
-
-    standardize : bool
-        If True, also return a within-task-group z-scored version of the
-        likelihood HQ score. This is usually the version to linearly combine
-        with a similarly standardized spectral score.
-
-    eps : float
-        Numerical stability constant.
-
-    Returns
-    -------
-    out : dict
-        out["score"] :
-            Shape (n_worker, n_task_group).
-            HQ posterior score q_L[j,g,H]. Larger means more HQ-like.
-
-        out["score_z"] :
-            Shape (n_worker, n_task_group).
-            Group-wise standardized version of score. Use this for direct
-            linear combination with standardized spectral scores.
-
-        out["tier_prob"] :
-            Shape (n_worker, n_task_group, 3).
-            Soft likelihood-only tier probabilities.
-
-        out["log_evidence"] :
-            Shape (n_worker, n_task_group, 3).
-            Distance-based log evidence for LQ/HQ/biased.
-
-        out["dist_sq"] :
-            Shape (n_worker, n_task_group, 3).
-            Squared distances from worker embedding to each tier center.
-
-        out["hq_advantage"] :
-            Shape (n_worker, n_task_group).
-            Log-evidence advantage of HQ over the best non-HQ tier.
-            Positive means HQ is more likely than both LQ and biased.
-        '''
-
+        Tier convention:
+            0 = LQ
+            1 = HQ
+        """
         B = np.asarray(self.B, dtype=float)
         clusters = np.asarray(clusters, dtype=float)
 
@@ -1160,64 +1073,54 @@ class LFGP():
 
         n_worker, n_task_group, lf_dim = B.shape
 
-        if clusters.shape != (3, lf_dim, n_task_group):
+        expected_shape = (2, lf_dim, n_task_group)
+        if clusters.shape != expected_shape:
             raise ValueError(
-                "clusters must have shape (3, lf_dim, n_task_group). "
-                f"Got {clusters.shape}, expected {(3, lf_dim, n_task_group)}."
+                f"clusters must have shape {expected_shape}; got {clusters.shape}."
             )
 
         if temperature <= 0:
             raise ValueError("temperature must be positive.")
 
-        # Convert centers to shape (n_task_group, 3, lf_dim)
+        # centers[g, tier, :] with tier 0=LQ and tier 1=HQ
         centers = np.transpose(clusters, (2, 0, 1))
 
-        # dist_sq[j, g, t] = || B[j,g,:] - center[g,t,:] ||^2
+        # dist_sq[j, g, tier]
         diff = B[:, :, None, :] - centers[None, :, :, :]
         dist_sq = np.sum(diff ** 2, axis=-1)
 
-        # Distance-based likelihood evidence:
-        #
-        # ell^L_{jgt} = - ||B[j,g,:] - mu[g,t,:]||^2 / temperature
-        #
-        # Larger means worker j is closer to tier center t in task group g.
+        # Larger evidence means closer to the corresponding tier center.
         log_evidence = -dist_sq / temperature
 
-        # Add tier priors if provided.
         if priors is not None:
             priors = np.asarray(priors, dtype=float)
 
-            if priors.shape == (3,):
+            if priors.shape == (2,):
                 log_prior = np.log(priors + eps)[None, None, :]
-            elif priors.shape == (n_task_group, 3):
+            elif priors.shape == (n_task_group, 2):
                 log_prior = np.log(priors + eps)[None, :, :]
             else:
                 raise ValueError(
-                    "priors must have shape (3,) or (n_task_group, 3)."
+                    "priors must have shape (2,) or (n_task_group, 2)."
                 )
 
             log_evidence = log_evidence + log_prior
 
-        # Stable softmax over tiers.
         max_log = np.max(log_evidence, axis=2, keepdims=True)
         exp_log = np.exp(log_evidence - max_log)
-        tier_prob = exp_log / (np.sum(exp_log, axis=2, keepdims=True) + eps)
+        tier_prob = exp_log / (
+            np.sum(exp_log, axis=2, keepdims=True) + eps
+        )
 
-        # Scalar likelihood score with the SAME shape as spectral score:
-        # score[j,g] = likelihood-only probability of HQ.
-        #
-        # tier convention:
-        #   0 = LQ
-        #   1 = HQ
-        #   2 = biased
+        # Probability of HQ under the two-center distance model.
         score = tier_prob[:, :, 1]
 
-        # HQ advantage over the best non-HQ tier.
-        # Positive means HQ evidence is stronger than both LQ and biased evidence.
-        non_hq_best = np.maximum(log_evidence[:, :, 0], log_evidence[:, :, 2])
-        hq_advantage = log_evidence[:, :, 1] - non_hq_best
+        # Positive values favor HQ over LQ.
+        hq_advantage = (
+            log_evidence[:, :, 1]
+            - log_evidence[:, :, 0]
+        )
 
-        # Group-wise z-score, useful for linear combination with spectral score.
         if standardize:
             mean_g = np.nanmean(score, axis=0, keepdims=True)
             std_g = np.nanstd(score, axis=0, keepdims=True)
@@ -1233,11 +1136,3 @@ class LFGP():
             "dist_sq": dist_sq,
             "hq_advantage": hq_advantage,
         }
-            
-            
-            
-            
-                
-            
-                
-            
