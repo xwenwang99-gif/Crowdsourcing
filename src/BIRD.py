@@ -1,25 +1,63 @@
 # -*- coding: utf-8 -*-
 """
-BIRD.py -- loader for the Bluebirds dataset (Welinder et al., NIPS 2010),
-as distributed with Zhang et al., "Spectral Methods Meet EM" (github.com/zhangyuc/SpectralMethodsMeetEM).
+BIRD.py -- Bluebirds loader with optional global LQ workers.
 
-108 images, 39 workers, 4,212 labels, 2 classes (Indigo Bunting vs Blue Grosbeak;
-60 / 48). Fully dense: every worker labels every image.
+r controls the number of synthetic random workers relative to the
+number of original workers.
 
-Expected files (labels already shifted from 1/2 to 0/1):
-    data/bird_answer.csv   columns: question, worker, answer
-    data/bird_truth.csv    columns: question, truth
+Examples:
+    r = 0.0 -> 0 added workers
+    r = 0.5 -> ~20 added workers
+    r = 1.0 -> 39 added workers
+    r = 2.0 -> 78 added workers
 
-Returns the same tuple as get_DOG() / get_FACE().
+Each synthetic LQ worker labels every task uniformly at random.
 """
 
 import os
+import numpy as np
 from src.FACE import load_crowd_csv
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
-_DEFAULT_DIR = os.path.join(_HERE, "..", "data")
+_DEFAULT_DIR = os.path.join(_HERE, "dataset")
 
 
-def get_BIRD(data_dir=_DEFAULT_DIR):
-    return load_crowd_csv(os.path.join(data_dir, "bird_answer.csv"),
-                          os.path.join(data_dir, "bird_truth.csv"))
+def get_BIRD(data_dir=_DEFAULT_DIR, r=0.0, seed=None):
+    rating, y_true, R_obs, n_task, n_worker, n_classes = load_crowd_csv(
+        os.path.join(data_dir, "bird_answer.csv"),
+        os.path.join(data_dir, "bird_truth.csv")
+    )
+
+    if r <= 0:
+        return rating, y_true, R_obs, n_task, n_worker, n_classes
+
+    rng = np.random.default_rng(seed)
+
+    # Number of synthetic global-LQ workers
+    n_lq = int(round(r * n_worker))
+
+    # Original worker IDs are assumed to be 0, ..., n_worker-1
+    # Synthetic workers therefore start at n_worker
+    lq_rows = []
+
+    for worker_id in range(n_worker, n_worker + n_lq):
+        # Random label for every task
+        labels = rng.integers(0, n_classes, size=n_task)
+
+        for task_id in range(n_task):
+            lq_rows.append([task_id, worker_id, labels[task_id]])
+
+    lq_rows = np.asarray(lq_rows, dtype=rating.dtype)
+
+    # rating: [task_id, worker_id, label]
+    rating = np.vstack([rating, lq_rows])
+
+    # R_obs: n_task x n_worker
+    # Synthetic workers label every task, so append columns of 1s
+    lq_obs = np.ones((n_task, n_lq), dtype=R_obs.dtype)
+    R_obs = np.hstack([R_obs, lq_obs])
+
+    n_worker_new = n_worker + n_lq
+
+
+    return rating, y_true, R_obs, n_task, n_worker_new, n_classes

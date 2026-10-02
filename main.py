@@ -66,16 +66,19 @@ N_TASK        = 200
 N_WORKER      = 400
 N_TASK_GROUPS = 5
 
+LAMBDA1 = 1
+LAMBDA2_0 = 1
+LAMBDA2_1 = 1
 # which methods to run (replaces the eigen_ex / DS_ex / ... flags)
 ENABLE = {
     "Eigen_L2":   1,   # LFGP fit + spectral worker tiering
     "Likelihood": 1,   # same LFGP fit, labels via _mc_infer_by_task (no spectral step)
     "Likelihood2":  1,   # warm-restarted likelihood, init from spectral tiers
     "Eigen_L2_v2":  1,
-    "Eigen_Oracle": 1,   # spectral tiering + label infer on the TRUE task grouping
+    "Eigen_Oracle": 0,   # spectral tiering + label infer on the TRUE task grouping
     "DS":       1,
     "MV_HQ":    0,
-    "MV":       0,
+    "MV":       1,
     "GLAD":     0,
     "MultiSPA": 0,
     "GTIC":     0,
@@ -93,13 +96,14 @@ DRAW_HQ_VOTES = 0
 REMOVE_GLOBAL_LQ = False
 SAVE_RESULTS = True     # False: no results/run_<timestamp>/ folder, nothing written to disk
 
-DATASET = "synthetic"
+DATASET = "bird"
 REAL_DATA = DATASET != "synthetic"   # real data has no true worker tiers / latent factors
+LQ_RATIO = 0.5
 METHODS = [m for m, on in ENABLE.items() if on]
 
 DATA_KW = dict(                       # getdata_biased arguments, kept in one place
     n_task=N_TASK, n_worker=N_WORKER, n_task_groups=N_TASK_GROUPS,
-    k=3, sigma=1, obs_prob=1, hq_ratio=1/6, bias_ratio=0,
+    k=3, sigma=1, obs_prob=1, hq_ratio=1/6, bias_ratio=1/10,
     delta=1, n_classes=N_TASK_GROUPS,
 )
 
@@ -213,29 +217,29 @@ for i in range(N_RUNS):
         rating, y_true, worker_label, R_obs, task_lf, worker_lf = getdata_biased(**DATA_KW)
     else:
         loader = {"dog": get_DOG, "face": get_FACE, "bird": get_BIRD}[DATASET]
-        rating, y_true, R_obs, N_TASK, N_WORKER, N_TASK_GROUPS = loader()
+        rating, y_true, R_obs, N_TASK, N_WORKER, N_TASK_GROUPS = loader(r=LQ_RATIO)
         worker_label = task_lf = worker_lf = None   # no ground-truth worker tiers
-
+    '''
     # -----------------------
     # Same fitting seed
     # -----------------------
     fit_seed = 999
 
     random.seed(fit_seed)
-    np.random.seed(fit_seed)
+    np.random.seed(fit_seed)    
     torch.manual_seed(fit_seed)
 
     if torch.cuda.is_available():
         torch.cuda.manual_seed_all(fit_seed)
 
-
+    '''
     produced = {}   # method name -> predicted label vector for this run
 
     # LFGP model is needed by Eigen_L2, Likelihood, and DS
     model = None
     if ENABLE["Eigen_L2"] or ENABLE["Likelihood"] or ENABLE["DS"]:
         model = LFGP(lf_dim=N_TASK_GROUPS, n_worker_group=N_TASK_GROUPS,
-                     lambda1=1, lambda2_0=1, lambda2_1=1)
+                     lambda1=LAMBDA1, lambda2_0=LAMBDA2_0, lambda2_1=LAMBDA2_1)
         model._prescreen(rating)
 
     # one LFGP fit shared by the likelihood-only and spectral methods
@@ -247,7 +251,7 @@ for i in range(N_RUNS):
         pred_group = U.astype(int)
         cluster_acc = model.task_acc(pred_group, y_true)
 
-    if ENABLE["Likelihood"]:
+    if ENABLE["Likelihood"] and not REAL_DATA:
         # likelihood step only: majority vote of the fit's own HQ workers (V) 
         hq_lik = [np.where(V[:, g] == 1)[0] for g in range(N_TASK_GROUPS)]
         biased_lik = [np.where(V[:, g] == 2)[0] for g in range(N_TASK_GROUPS)]
@@ -256,7 +260,7 @@ for i in range(N_RUNS):
             pred_group, y_true, N_TASK_GROUPS)
         tier_lists["Likelihood"]["true"].append(yt_tier)
         tier_lists["Likelihood"]["pred"].append(yp_tier)
-
+    if ENABLE["Likelihood"]:    
         #y_pred = model._mc_infer(rating )
         y_pred = model._mc_infer(rating)
         metrics["Likelihood"]["cluster_acc"].append(cluster_acc)
@@ -266,8 +270,8 @@ for i in range(N_RUNS):
         _, y_pred, hq_workers_pred, biased_workers_pred, spectral = _hq_and_label_infer(
             pred_group, R_obs, y_true, worker_label,
             N_TASK, N_WORKER, N_TASK_GROUPS,
-            LABEL_MODE="group", verbose=False,
-            MIN_COVERAGE=5, return_spectral=True,
+            LABEL_MODE="task", verbose=False,
+            MIN_COVERAGE=0, return_spectral=True,
         )
         
         if not REAL_DATA:
@@ -319,7 +323,7 @@ for i in range(N_RUNS):
 
             
             model2 = LFGP(lf_dim=N_TASK_GROUPS, n_worker_group=N_TASK_GROUPS,
-                          lambda1=1, lambda2_0=1, lambda2_1=1)
+                          lambda1=LAMBDA1, lambda2_0=LAMBDA2_0, lambda2_1=LAMBDA2_1)
             model2._prescreen(rating)
             A2, B2, U2, V2, clusters2 = model2._mc_fit(
                 rating, key=y_true, scheme="warm", epsilon=1e-5,
@@ -344,7 +348,7 @@ for i in range(N_RUNS):
                 pred_group2, R_obs_warm, y_true, worker_label,
                 N_TASK, N_WORKER, N_TASK_GROUPS,
                 LABEL_MODE="task", verbose=False,
-                MIN_COVERAGE=5, return_spectral=False,
+                MIN_COVERAGE=0, return_spectral=False,
             )
     
             if not REAL_DATA:
@@ -403,7 +407,7 @@ for i in range(N_RUNS):
             oracle_group, R_obs, y_true, worker_label,
             N_TASK, N_WORKER, N_TASK_GROUPS,
             LABEL_MODE="task", verbose=False,
-            MIN_COVERAGE=5, return_spectral=False,
+            MIN_COVERAGE=0, return_spectral=False,
         )
         if not REAL_DATA:
             yt_tier, yp_tier = build_tier_vectors(

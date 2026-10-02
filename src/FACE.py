@@ -1,50 +1,37 @@
 # -*- coding: utf-8 -*-
-"""
-FACE.py -- loader for the Face Sentiment Identification dataset
-(Mozafari et al. 2014; distributed with Zheng et al., VLDB 2017).
-
-584 face images, 27 workers, 5,242 labels, 4 classes (balanced, 146 each).
-
-Expected files (relative to the project root):
-    data/face_answer.csv   columns: question, worker, answer
-    data/face_truth.csv    columns: question, truth
-
-Returns the same tuple as get_DOG():
-    rating        (n_label, 3) int array: [task_idx, worker_idx, label], all 0-based
-    y_true        (n_task,)    int array of ground-truth labels
-    R_obs         (n_task, n_worker) float array, NaN where unobserved
-    n_task, n_worker, n_classes
-"""
 
 import os
 import numpy as np
 import pandas as pd
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
-_DEFAULT_DIR = os.path.join(_HERE, "..", "data")
+_DEFAULT_DIR = os.path.join(_HERE, "dataset")
 
 
 def load_crowd_csv(answer_csv, truth_csv):
-    """Generic loader for (question, worker, answer) + (question, truth) CSVs.
-    Shared by get_FACE and get_BIRD."""
+    """Generic loader for (question, worker, answer) + (question, truth) CSVs."""
+
     ans = pd.read_csv(answer_csv)
     truth = pd.read_csv(truth_csv)
 
-    # keep only tasks that have ground truth, drop duplicate (task, worker) pairs
+    # Keep only tasks that have ground truth
     ans = ans[ans["question"].isin(truth["question"])]
     ans = ans.drop_duplicates(subset=["question", "worker"], keep="first")
 
-    # map raw ids -> contiguous 0-based indices
+    # Map raw IDs -> contiguous 0-based indices
     task_ids = np.sort(truth["question"].unique())
     task_map = {q: i for i, q in enumerate(task_ids)}
-    worker_ids = np.sort(ans["worker"].astype(str).unique())   # worker ids are strings
+
+    worker_ids = np.sort(ans["worker"].astype(str).unique())
     worker_map = {w: j for j, w in enumerate(worker_ids)}
 
-    # labels -> contiguous 0..K-1 (Face is already 0..3; this is just a safeguard)
-    classes = np.sort(pd.unique(pd.concat([ans["answer"], truth["truth"]])))
+    # Labels -> contiguous 0,...,K-1
+    classes = np.sort(ans["answer"].unique())
     label_map = {c: k for k, c in enumerate(classes)}
 
-    n_task, n_worker, n_classes = len(task_ids), len(worker_ids), len(classes)
+    n_task = len(task_ids)
+    n_worker = len(worker_ids)
+    n_classes = len(classes)
 
     rating = np.column_stack([
         ans["question"].map(task_map).to_numpy(),
@@ -53,7 +40,9 @@ def load_crowd_csv(answer_csv, truth_csv):
     ]).astype(int)
 
     y_true = np.empty(n_task, dtype=int)
-    y_true[truth["question"].map(task_map).to_numpy()] = truth["truth"].map(label_map).to_numpy()
+    y_true[truth["question"].map(task_map).to_numpy()] = (
+        truth["truth"].map(label_map).to_numpy()
+    )
 
     R_obs = np.full((n_task, n_worker), np.nan)
     R_obs[rating[:, 0], rating[:, 1]] = rating[:, 2]
@@ -61,16 +50,33 @@ def load_crowd_csv(answer_csv, truth_csv):
     return rating, y_true, R_obs, n_task, n_worker, n_classes
 
 
-def get_FACE(data_dir=_DEFAULT_DIR):
-    return load_crowd_csv(os.path.join(data_dir, "face_answer.csv"),
-                          os.path.join(data_dir, "face_truth.csv"))
+def get_FACE(data_dir=_DEFAULT_DIR, r=0.0, seed=None):
+    rating, y_true, R_obs, n_task, n_worker, n_classes = load_crowd_csv(
+        os.path.join(data_dir, "face_answer.csv"),
+        os.path.join(data_dir, "face_truth.csv")
+    )
 
+    # ----------------------------------------
+    # Add global random LQ workers
+    # ----------------------------------------
+    if r > 0:
+        rng = np.random.default_rng(seed)
+        n_lq = int(round(r * n_worker))
 
-if __name__ == "__main__":
-    rating, y_true, R_obs, n_task, n_worker, K = get_FACE()
-    print(f"tasks={n_task} workers={n_worker} labels={len(rating)} classes={K}")
-    print("class counts:", np.bincount(y_true, minlength=K))
-    obs = (~np.isnan(R_obs)).astype(int)
-    ov = obs.T @ obs
-    iu = np.triu_indices(n_worker, 1)
-    print(f"pairwise overlap: median={np.median(ov[iu]):.0f}, mean={ov[iu].mean():.1f}")
+        # One random label for every task × synthetic worker
+        lq_labels = rng.integers(0, n_classes, size=(n_task, n_lq))
+
+        # Construct long-format rows: [task, worker, label]
+        tasks = np.repeat(np.arange(n_task), n_lq)
+        workers = np.tile(np.arange(n_worker, n_worker + n_lq), n_task)
+        labels = lq_labels.ravel()
+
+        lq_rating = np.column_stack([tasks, workers, labels])
+        rating = np.vstack([rating, lq_rating])
+
+        # Append actual labels to R_obs
+        R_obs = np.hstack([R_obs, lq_labels.astype(float)])
+
+        n_worker += n_lq
+
+    return rating, y_true, R_obs, n_task, n_worker, n_classes
