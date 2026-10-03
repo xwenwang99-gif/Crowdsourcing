@@ -29,7 +29,7 @@ For class-c logit to be large we need B[c][j] to point in the e_g direction:
     → logit(c=g_wrong) ≈ k²   (wrong class wins)
 
   LQ worker:
-    B[c][j] ≈ Uniform[-k, k]^d  for all c  →  near-uniform votes
+    B[c][j] = 0  for all c 
 
 Parameters
 ----------
@@ -107,7 +107,7 @@ def getdata_biased(
         centroid[g % n_classes] = k
         ts, te = g * tasks_per_group, (g + 1) * tasks_per_group
         A[ts:te] = np.random.multivariate_normal(
-            centroid, sigma * np.eye(n_classes), tasks_per_group
+            centroid, sigma**2 * np.eye(n_classes), tasks_per_group
         )
 
     # ------------------------------------------------------------------ #
@@ -133,7 +133,11 @@ def getdata_biased(
     #   → logit(c=g_wrong) = A[i]·B[g_wrong][j] ≈ k²  >> logit(c=g)≈0  #
     #   All other B[c][j] remain random (small contribution)              #
     # ------------------------------------------------------------------ #
-    B = np.random.random((n_task_groups, n_worker, n_classes)) * 2 * k - k
+    B = np.random.multivariate_normal(
+        np.zeros(n_classes),
+        sigma**2 * np.eye(n_classes),
+        size=(n_task_groups, n_worker),
+    )
 
     worker_type_idx = np.full((n_worker, n_task_groups), 0, dtype=int)  # default LQ
 
@@ -152,29 +156,25 @@ def getdata_biased(
         task_centroid = np.zeros(n_classes)
         task_centroid[g_correct] = k
         
-        # Reset all slots for this worker block to random before writing
-        for c in range(n_classes):
-            B[c, hq_start:hq_start+workers_per_group] = (
-                np.random.random((workers_per_group, n_classes)) * 2 * k - k
-            )
+
         # HQ: correct-class slot B[g] → k*e_g
         B[g, hq_start:hq_end] = np.random.multivariate_normal(
-            task_centroid, sigma * np.eye(n_classes), n_hq
+            task_centroid, sigma**2 * np.eye(n_classes), n_hq
         )
         worker_type_idx[hq_start:hq_end, g] = 1
         if n_bias > 0:
             # Biased:
             #   correct slot B[g][j] ≈ 0  (near-zero so logit(c=g) ≈ 0)
             B[g, bias_start:bias_end] = np.random.multivariate_normal(
-                np.zeros(n_classes), sigma * np.eye(n_classes), n_bias
+                np.zeros(n_classes), sigma**2 * np.eye(n_classes), n_bias
             )
             #   wrong slot B[g_wrong][j] ≈ k*e_g  (so logit(c=g_wrong) ≈ k²)
             B[g_wrong, bias_start:bias_end] = np.random.multivariate_normal(
-                task_centroid/2, (sigma) * np.eye(n_classes), n_bias
+                task_centroid/2, (sigma**2) * np.eye(n_classes), n_bias
             )
             worker_type_idx[bias_start:bias_end, g] = 2
 
-        # LQ: already random from initialisation, no overwrite needed
+
 
     # One-hot worker_type tensor
     worker_type = np.zeros((n_worker, n_task_groups, 3), dtype=int)
@@ -225,57 +225,5 @@ def getdata_biased(
     # Return B as (n_worker, n_task_groups, n_classes)
     B_out = B.transpose(1, 0, 2)
 
-    return rating, label, worker_type, R_obs, A, B_out
+    return rating, label, label, worker_type, R_obs, A, B_out
 
-
-# ------------------------------------------------------------------ #
-# Smoke test + sanity checks                                          #
-# ------------------------------------------------------------------ #
-if __name__ == "__main__":
-    G = 5
-    print("=== Worker count checks ===")
-    for cfg in [
-        dict(hq_ratio=1/3, bias_ratio=1/3),
-        dict(hq_ratio=0.5, bias_ratio=0.25),
-        dict(hq_ratio=0.2, bias_ratio=0.4),
-    ]:
-        _, _, wt, _, _, _ = getdata_biased(
-            n_task=500, n_worker=150, n_task_groups=G, k=3.0, sigma=1.0, seed=42, **cfg
-        )
-        print(
-            f"  hq={cfg['hq_ratio']:.2f} bias={cfg['bias_ratio']:.2f} | "
-            f"HQ={wt[:,:,0].sum(0)} | Biased={wt[:,:,1].sum(0)} | LQ={wt[:,:,2].sum(0)}"
-        )
-
-    print("\n=== Bias sanity check (group-0 tasks, k=5, sigma=0.1) ===")
-    rating, label, worker_type, R_obs, A, B = getdata_biased(
-        n_task=1000, n_worker=150, n_task_groups=G,
-        k=5.0, sigma=0.1, obs_prob=1.0,
-        hq_ratio=1/3, bias_ratio=1/3, seed=0,
-    )
-    wpg    = 150 // G
-    n_hq   = max(1, round(1/3 * wpg))
-    n_bias = max(1, round(1/3 * wpg))
-
-    g0_tasks     = np.where(label == 0)[0]
-    hq_workers   = np.arange(0, n_hq)
-    bias_workers = np.arange(n_hq, n_hq + n_bias)
-    lq_workers   = np.arange(n_hq + n_bias, wpg)
-
-    def vote_dist(tasks, workers, R_obs, n_classes=5):
-        votes = R_obs[np.ix_(tasks, workers)].flatten()
-        votes = votes[~np.isnan(votes)].astype(int)
-        c = np.bincount(votes, minlength=n_classes)
-        return c / c.sum()
-
-    hq_d   = vote_dist(g0_tasks, hq_workers,   R_obs)
-    bias_d = vote_dist(g0_tasks, bias_workers, R_obs)
-    lq_d   = vote_dist(g0_tasks, lq_workers,   R_obs)
-
-    print(f"  HQ    vote dist (true=0):                {np.round(hq_d,   3)}")
-    print(f"  Biased vote dist (true=0, bias→label 1): {np.round(bias_d, 3)}")
-    print(f"  LQ    vote dist (true=0):                {np.round(lq_d,   3)}")
-    print()
-    print(f"  HQ    P(correct=0): {hq_d[0]:.3f}")
-    print(f"  Biased P(correct=0): {bias_d[0]:.3f}  |  P(wrong=1): {bias_d[1]:.3f}")
-    print(f"  LQ    P(correct=0): {lq_d[0]:.3f}  (expect ~0.2 for 5 classes)")

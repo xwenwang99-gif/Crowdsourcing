@@ -37,8 +37,10 @@ from src.lfgp_withoutO_new import LFGP
 from src.lfgp_paper import LFGP_PAPER
 from src.GTIC import gtic
 from src.CBCC import cbcc
+from src.NetEaseCrowd import get_NETEASE
 from src.multispa import multispa_fit_predict
 from src.getdata_biased import getdata_biased
+from src.getdata_new import getdata_new
 from src.eigenInfer import _hq_and_label_infer, tier_centers_in_lf_space
 from src.Diagnosis import (
     diagnose, 
@@ -49,7 +51,8 @@ from src.Diagnosis import (
     plot_tier_confusion,
     build_worker_summary, 
     print_spectral_worker_comparison,
-    task_group_mapping)
+    task_group_mapping,
+    plot_spectral_diagnostics)
 from src.hq_vote_diagnostic import hq_vote_report
 from src.peera import peerA
 from src.hq_vote_diagnostic import hq_vote_report, plot_worker_lf_pca,true_tier_centers, plot_loss_trajectory
@@ -60,7 +63,7 @@ warnings.filterwarnings("ignore")
 # --------------------------------------------------------------------------- #
 #  configuration
 # --------------------------------------------------------------------------- #
-N_RUNS        = 10
+N_RUNS        = 5
 MAXITER       = 100
 N_TASK        = 200
 N_WORKER      = 400
@@ -70,11 +73,21 @@ LAMBDA1 = 1
 LAMBDA2_0 = 1
 LAMBDA2_1 = 1
 # which methods to run (replaces the eigen_ex / DS_ex / ... flags)
+
+DRAW_SPECTRAL = 1
+DRAW_HQ_VOTES = 0
+REMOVE_GLOBAL_LQ = False
+SAVE_RESULTS = True   # False: no results/run_<timestamp>/ folder, nothing written to disk
+HQ_RATIO = 1/10
+DATASET = "synthetic"
+REAL_DATA = DATASET != "synthetic"   # real data has no true worker tiers / latent factors
+LQ_RATIO = 5
+
 ENABLE = {
     "Eigen_L2":   1,   # LFGP fit + spectral worker tiering
     "Likelihood": 1,   # same LFGP fit, labels via _mc_infer_by_task (no spectral step)
-    "Likelihood2":  1,   # warm-restarted likelihood, init from spectral tiers
-    "Eigen_L2_v2":  1,
+    "Likelihood2":  0,   # warm-restarted likelihood, init from spectral tiers
+    "Eigen_L2_v2":  0,
     "Eigen_Oracle": 0,   # spectral tiering + label infer on the TRUE task grouping
     "DS":       1,
     "MV_HQ":    0,
@@ -86,24 +99,11 @@ ENABLE = {
     "CBCC":     0,
 }
 
-# biased-center scheme for the LFGP worker KMeans / penalty (toggle — one
-# LFGP fit with the selected scheme). Both identify worker groups by
-# center-norm magnitude (smallest=LQ, largest=HQ, middle=biased):
-#   "free2" — two free centers + one center fixed at the origin (LQ)
-#   "free3" — all three centers free
-BIAS_SCHEME = "free2"
-DRAW_HQ_VOTES = 0
-REMOVE_GLOBAL_LQ = False
-SAVE_RESULTS = True     # False: no results/run_<timestamp>/ folder, nothing written to disk
-
-DATASET = "Synthetic"
-REAL_DATA = DATASET != "synthetic"   # real data has no true worker tiers / latent factors
-LQ_RATIO = 10
 METHODS = [m for m, on in ENABLE.items() if on]
 
 DATA_KW = dict(                       # getdata_biased arguments, kept in one place
     n_task=N_TASK, n_worker=N_WORKER, n_task_groups=N_TASK_GROUPS,
-    k=3, sigma=1, obs_prob=1, hq_ratio=1/6, bias_ratio=1/10,
+    k=3, sigma=1, obs_prob=1, hq_ratio=1/6, bias_ratio=0,
     delta=1, n_classes=N_TASK_GROUPS,
 )
 
@@ -214,10 +214,10 @@ tier_lists = {name: {"true": [], "pred": []}
 for i in range(N_RUNS):
     np.random.seed(i)
     if DATASET == "synthetic":
-        rating, y_true, worker_label, R_obs, task_lf, worker_lf = getdata_biased(**DATA_KW)
+        rating, y_true, task_group, worker_label, R_obs, task_lf, worker_lf = getdata_biased(**DATA_KW)
     else:
-        loader = {"dog": get_DOG, "face": get_FACE, "bird": get_BIRD}[DATASET]
-        rating, y_true, R_obs, N_TASK, N_WORKER, N_TASK_GROUPS = loader(r=LQ_RATIO, seed = i)
+        loader = {"dog": get_DOG, "face": get_FACE, "bird": get_BIRD, "netease": get_NETEASE}[DATASET]
+        rating, y_true, task_group, R_obs, N_TASK, N_WORKER, N_TASK_GROUPS = loader(r=LQ_RATIO, seed = i)
         worker_label = task_lf = worker_lf = None   # no ground-truth worker tiers
     '''
     # -----------------------
@@ -245,11 +245,11 @@ for i in range(N_RUNS):
     # one LFGP fit shared by the likelihood-only and spectral methods
     if ENABLE["Eigen_L2"] or ENABLE["Likelihood"]:
         A, B, U, V, clusters_np = model._mc_fit(
-            rating, key=y_true, scheme="ds", epsilon=1e-5,
+            rating, key=task_group, scheme="ds", U_init=task_group, epsilon=1e-5,
             maxiter=MAXITER, verbose=1,
         )
         pred_group = U.astype(int)
-        cluster_acc = model.task_acc(pred_group, y_true)
+        cluster_acc = model.task_acc(pred_group, task_group)
 
     if ENABLE["Likelihood"] and not REAL_DATA:
         # likelihood step only: majority vote of the fit's own HQ workers (V) 
@@ -269,22 +269,28 @@ for i in range(N_RUNS):
     if ENABLE["Eigen_L2"]:        
         _, y_pred, hq_workers_pred, biased_workers_pred, spectral = _hq_and_label_infer(
             pred_group, R_obs, y_true, worker_label,
-            N_TASK, N_WORKER, N_TASK_GROUPS,
+            N_TASK, N_WORKER, N_TASK_GROUPS,hq_ratio = HQ_RATIO,
             LABEL_MODE="task", verbose=False,
             MIN_COVERAGE=0, return_spectral=True,
         )
-        
+        plot_spectral_diagnostics(
+            spectral,
+            save_dir=OUT_DIR,
+            run=i,
+            draw=DRAW_SPECTRAL
+        )
+                
         if not REAL_DATA:
             print_spectral_worker_comparison(
                 spectral,
                 worker_label,
                 pred_group,
-                y_true,
+                task_group,
             )
 
             yt_tier, yp_tier = build_tier_vectors(
                 worker_label, hq_workers_pred, biased_workers_pred,
-                pred_group, y_true, N_TASK_GROUPS)
+                pred_group, task_group, N_TASK_GROUPS)
             tier_lists["Eigen_L2"]["true"].append(yt_tier)
             tier_lists["Eigen_L2"]["pred"].append(yp_tier)
 
@@ -326,7 +332,7 @@ for i in range(N_RUNS):
                           lambda1=LAMBDA1, lambda2_0=LAMBDA2_0, lambda2_1=LAMBDA2_1)
             model2._prescreen(rating)
             A2, B2, U2, V2, clusters2 = model2._mc_fit(
-                rating, key=y_true, scheme="warm", epsilon=1e-5,
+                rating, key=task_group, scheme="warm", epsilon=1e-5,
                 maxiter=MAXITER, verbose=0,
                 A_init=A, B_init=B,         # the first fit's grouping
                 U_init=pred_group,
@@ -335,7 +341,7 @@ for i in range(N_RUNS):
                 worker_active_mask=warm_worker_mask
             )
     
-            cluster_acc2 = model2.task_acc(U2.astype(int), y_true)
+            cluster_acc2 = model2.task_acc(U2.astype(int), task_group)
             y_pred2 = model2._mc_infer_by_task(rating)
 
             pred_group2 = U2.astype(int)
@@ -344,11 +350,11 @@ for i in range(N_RUNS):
             R_obs_warm = R_obs.copy()
             R_obs_warm[:, ~warm_worker_mask] = np.nan
             
-            _, y_pred_e2, hq_workers_pred2, biased_workers_pred2 = _hq_and_label_infer(
+            _, y_pred_e2, hq_workers_pred2, biased_workers_pred2, spectral = _hq_and_label_infer(
                 pred_group2, R_obs_warm, y_true, worker_label,
                 N_TASK, N_WORKER, N_TASK_GROUPS,
                 LABEL_MODE="task", verbose=False,
-                MIN_COVERAGE=0, return_spectral=False,
+                MIN_COVERAGE=0, return_spectral=True,
             )
 
                 
@@ -402,7 +408,7 @@ for i in range(N_RUNS):
         # Upper bound on the spectral step: feed the ground-truth task grouping
         # so that any tiering/label error is attributable to the eigen-decomposition
         # alone, not to clustering error propagated from the LFGP fit.
-        oracle_group = np.asarray(y_true, dtype=int)
+        oracle_group = np.asarray(task_group, dtype=int)
 
         _, y_pred_or, hq_or, biased_or = _hq_and_label_infer(
             oracle_group, R_obs, y_true, worker_label,
@@ -426,19 +432,26 @@ for i in range(N_RUNS):
 
     if ENABLE["DS"]:
         y_pred = model._init_task_member_ds(rating)[:, 1]
-        cluster_acc = model.task_acc(y_pred, y_true)
+        #cluster_acc = model.task_acc(y_pred, task_group)
         metrics["DS"]["cluster_acc"].append(cluster_acc)
         produced["DS"] = y_pred        
 
     if ENABLE["MV_HQ"]:
-        y_pred = np.full(N_TASK, -1)
+        y_pred = np.full(N_TASK, -1, dtype=int)
+
         for t in range(N_TASK):
-            hq = np.where(worker_label[:, y_true[t]] == 1)[0]
-            labs = rating[np.isin(rating[:, 1], hq) & (rating[:, 0] == t)][:, 2]
+            g = task_group[t]
+            hq = np.where(worker_label[:, g, 1] == 1)[0]
+
+            labs = rating[
+                np.isin(rating[:, 1], hq) &
+                (rating[:, 0] == t)
+            ][:, 2]
+
             if len(labs):
                 y_pred[t] = mode(labs, axis=None).mode.item()
-        produced["MV_HQ"] = y_pred
 
+        produced["MV_HQ"] = y_pred
     if ENABLE["MV"]:
         y_pred = np.full(N_TASK, -1, dtype=int)
         for t in range(N_TASK):

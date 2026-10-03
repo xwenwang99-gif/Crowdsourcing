@@ -28,6 +28,9 @@ from sklearn.metrics import (
     accuracy_score,
 )
 from scipy.optimize import linear_sum_assignment
+import os
+import matplotlib.pyplot as plt
+from sklearn.cluster import KMeans
 
 TIER_NAMES = ("LQ", "HQ", "Biased")   # index = tier code
 
@@ -438,3 +441,161 @@ def task_group_mapping(pred_group, y_true, n_groups):
     mapping[row_ind] = col_ind
 
     return mapping
+
+def plot_spectral_embedding(X, true_tier=None, path=None, draw=False,
+                            title="Spectral embedding"):
+    plt.figure(figsize=(5, 5))
+
+    if true_tier is None:
+        plt.scatter(X[:, 0], X[:, 1], s=22, alpha=0.7)
+    else:
+        lq = true_tier == 0
+        hq = true_tier == 1
+
+        plt.scatter(X[lq, 0], X[lq, 1], s=20, alpha=0.5, label="LQ")
+        plt.scatter(X[hq, 0], X[hq, 1], s=35, alpha=0.9, label="HQ")
+        plt.legend()
+
+    plt.axhline(0, linewidth=0.8)
+    plt.axvline(0, linewidth=0.8)
+    plt.xlabel("Spectral coordinate 1")
+    plt.ylabel("Spectral coordinate 2")
+    plt.title(title)
+    plt.tight_layout()
+
+    if path is not None:
+        plt.savefig(path, dpi=300, bbox_inches="tight")
+
+    if draw:
+        plt.show()
+
+    plt.close()
+
+
+def plot_spectral_norms(X, hq_ratio=1/30, path=None, draw=False,
+                        title="Spectral norm distribution"):
+    norms = np.linalg.norm(X, axis=1)
+
+    km = KMeans(n_clusters=2, n_init=20, random_state=0).fit(norms[:, None])
+    centers = np.sort(km.cluster_centers_.ravel())
+
+    kmeans_cut = centers.mean()
+    ratio_cut = np.quantile(norms, 1 - hq_ratio)
+
+    plt.figure(figsize=(6, 4))
+    plt.hist(norms, bins=25, edgecolor="black", alpha=0.7)
+
+    plt.axvline(
+        kmeans_cut,
+        linestyle="--",
+        linewidth=2,
+        label=f"KMeans cutoff = {kmeans_cut:.3f}"
+    )
+
+    plt.axvline(
+        ratio_cut,
+        linestyle=":",
+        linewidth=2,
+        label=f"Top {hq_ratio:.3f} cutoff = {ratio_cut:.3f}"
+    )
+
+    plt.xlabel(r"Spectral norm $\|x_j^S\|_2$")
+    plt.ylabel("Number of workers")
+    plt.title(title)
+    plt.legend()
+    plt.tight_layout()
+
+    if path is not None:
+        plt.savefig(path, dpi=300, bbox_inches="tight")
+
+    if draw:
+        plt.show()
+
+    plt.close()
+
+
+def plot_sorted_spectral_norms(X, hq_ratio=1/30, path=None, draw=False,
+                               title="Sorted spectral norms"):
+    norms = np.sort(np.linalg.norm(X, axis=1))
+    n = len(norms)
+
+    n_hq = max(1, int(round(hq_ratio * n)))
+    cutoff = n - n_hq
+
+    plt.figure(figsize=(6, 4))
+    plt.plot(np.arange(n), norms)
+    plt.axvline(cutoff, linestyle="--", label=f"Top {hq_ratio:.3f}")
+
+    plt.xlabel("Worker rank")
+    plt.ylabel(r"Spectral norm $\|x_j^S\|_2$")
+    plt.title(title)
+    plt.legend()
+    plt.tight_layout()
+
+    if path is not None:
+        plt.savefig(path, dpi=300, bbox_inches="tight")
+
+    if draw:
+        plt.show()
+
+    plt.close()
+
+
+
+def plot_spectral_diagnostics(
+    spectral,
+    save_dir="results",
+    hq_ratio=1/30,
+    run=None,
+    draw=False
+):
+    os.makedirs(save_dir, exist_ok=True)
+
+    for g, out_g in enumerate(spectral["group_outputs"]):
+        if out_g.get("empty", False):
+            continue
+
+        tested = out_g["tested_mask"]
+        X = out_g["spectral_embedding"][tested, :]
+
+        if X.shape[0] == 0:
+            continue
+
+        prefix = f"run{run}_" if run is not None else ""
+
+        # 1. Spectral embedding
+        if X.shape[1] >= 2:
+            plot_spectral_embedding(
+                X,
+                path=os.path.join(
+                    save_dir,
+                    f"{prefix}spectral_embedding_group{g}.png"
+                ),
+                draw=draw,
+                title=f"Spectral embedding: group {g}"
+            )
+
+        # 2. Norm histogram
+        plot_spectral_norms(
+            X,
+            hq_ratio=hq_ratio,
+            path=os.path.join(
+                save_dir,
+                f"{prefix}spectral_norm_group{g}.png"
+            ),
+            draw=draw,
+            title=f"Spectral norms: group {g}"
+        )
+
+        # 3. Sorted norms
+        plot_sorted_spectral_norms(
+            X,
+            hq_ratio=hq_ratio,
+            path=os.path.join(
+                save_dir,
+                f"{prefix}spectral_norm_sorted_group{g}.png"
+            ),
+            draw=draw,
+            title=f"Sorted spectral norms: group {g}"
+        )
+

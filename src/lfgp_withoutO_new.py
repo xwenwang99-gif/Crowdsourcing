@@ -170,6 +170,7 @@ class LFGP():
 
             task_member = np.column_stack([np.arange(self.n_task), U]).astype(float)
             A = task_lf.copy()
+            A /= np.linalg.norm(A, axis=1, keepdims=True) + 1e-12
             B = worker_lf.copy()
             
         elif scheme == "task_oracle":
@@ -250,7 +251,8 @@ class LFGP():
             tmp_centroid = 2 * np.random.rand(self.lf_dim) - 1
             #tmp_centroid = tmp_centroid / np.linalg.norm(tmp_centroid)
             lf[task_idx, :] = np.random.multivariate_normal(tmp_centroid, 0.2 * np.eye(self.lf_dim), len(task_idx))
-
+        
+        lf /= np.linalg.norm(lf, axis=1, keepdims=True) + 1e-12
         return lf
     
 
@@ -511,6 +513,7 @@ class LFGP():
                     break
     
                 beta = beta - lr * grad
+                beta = beta / (torch.linalg.norm(beta) + 1e-12)
     
             A[t] = beta
     
@@ -1045,6 +1048,8 @@ class LFGP():
     
     def task_acc(self, data, key):
         membership = self.label_swap(data, key)
+        data = np.asarray(data, dtype=int)
+        key = np.asarray(key, dtype=int)
         return np.mean(membership == key)
     
 

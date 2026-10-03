@@ -55,4 +55,4 @@ def get_BIRD(data_dir=_DEFAULT_DIR, r=0.0, seed=None):
     n_worker_new = n_worker + n_lq
 
 
-    return rating, y_true, R_obs, n_task, n_worker_new, n_classes
+    return rating, y_true, y_true, R_obs, n_task, n_worker_new, n_classes

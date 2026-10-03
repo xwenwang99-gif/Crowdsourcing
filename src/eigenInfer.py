@@ -58,7 +58,9 @@ import warnings
 import numpy as np
 from scipy.stats import mode
 from sklearn.cluster import KMeans, AgglomerativeClustering
+from sklearn.metrics import silhouette_score
 from sklearn.mixture import GaussianMixture
+import matplotlib.pyplot as plt
 
 LQ, HQ, BIASED = 0, 1, 2
 
@@ -201,6 +203,7 @@ def spectral_worker_features_one_group(
     R_g,
     n_worker=None,
     n_categories=None,
+    hq_ratio=None,
     K=None,
     min_coverage=0,
     eps=1e-9,
@@ -208,6 +211,7 @@ def spectral_worker_features_one_group(
     random_state=0,
     return_matrices=False,
     check_tier_order=True,
+    verbose = 0
 ):
     """
     Extract spectral worker features for ONE predicted task group.
@@ -328,8 +332,10 @@ def spectral_worker_features_one_group(
     tier_kmeans = np.full(n_worker, LQ, dtype=int)
     tier_agg = np.full(n_worker, LQ, dtype=int)
     tier_hybrid = np.full(n_worker, LQ, dtype=int)
+    tier_ratio = np.full(n_worker, LQ, dtype=int)
     
     kmeans_centers = None
+    agg_centers = None
     
     
     if (
@@ -341,6 +347,8 @@ def spectral_worker_features_one_group(
     
         X = spectral_embedding[tested, :]
         X_norm = np.linalg.norm(X, axis=1).reshape(-1, 1)
+        if verbose:
+            spectral_two_cluster_check(X_norm)
 
         km = KMeans(n_clusters=2, n_init=n_init, random_state=random_state).fit(X_norm)
 
@@ -352,12 +360,43 @@ def spectral_worker_features_one_group(
 
         tier_kmeans[tested[km.labels_ == lq_cluster]] = LQ
         tier_kmeans[tested[km.labels_ == hq_cluster]] = HQ
+
+        # ------------------------------------------------------------
+        # 2-cluster Agglomerative: LQ vs HQ on spectral norm
+        # ------------------------------------------------------------
+        agg = AgglomerativeClustering(n_clusters=2, linkage="average")
+        agg_labels = agg.fit_predict(X_norm)
+
+        agg_centers = np.array([
+            X_norm[agg_labels == c].mean()
+            for c in range(2)
+        ])
+
+        lq_cluster_agg = np.argmin(agg_centers)
+        hq_cluster_agg = np.argmax(agg_centers)
+
+        tier_agg[tested[agg_labels == lq_cluster_agg]] = LQ
+        tier_agg[tested[agg_labels == hq_cluster_agg]] = HQ
+
+        # ------------------------------------------------------------
+        # Ratio-based split: top hq_ratio spectral norms -> HQ
+        # ------------------------------------------------------------
+
+        n_hq = max(1, int(round(hq_ratio * len(tested))))
+
+        order = np.argsort(X_norm.ravel())
+
+        hq_local = order[-n_hq:]
+        lq_local = order[:-n_hq]
+
+        tier_ratio[tested[lq_local]] = LQ
+        tier_ratio[tested[hq_local]] = HQ
     #---------------------------------
     # Backward compatibility:
     # existing spectral pipeline continues using KMeans by default.
     # ---------------------------------------------------------------
     
-    tier_spectral = tier_kmeans.copy()
+    tier_spectral = tier_ratio.copy()
     
     hq_idx = np.where(tier_spectral == HQ)[0]
     biased_idx = np.where(tier_spectral == BIASED)[0]
@@ -366,13 +405,14 @@ def spectral_worker_features_one_group(
  
     out = {
         "spectral_embedding": spectral_embedding,
-    
-        # Old API -- remains KMeans
         "tier_spectral": tier_spectral,
     
         # New side-by-side results
         "tier_kmeans": tier_kmeans,
+        "tier_agg": tier_agg,
+        "tier_ratio": tier_ratio,
         "kmeans_centers": kmeans_centers,
+        "agg_centers": agg_centers,
     
         "hq_idx": hq_idx,
         "biased_idx": biased_idx,
@@ -406,6 +446,7 @@ def extract_spectral_worker_features(
     n_task_groups,
     n_worker=None,
     n_categories=None,
+    hq_ratio=None,
     K=None,
     min_coverage=0,
     n_init=10,
@@ -442,6 +483,7 @@ def extract_spectral_worker_features(
     tier_kmeans = np.zeros((n_worker, n_task_groups),dtype=int,)
     tier_hybrid = np.zeros((n_worker, n_task_groups), dtype=int)   
     tier_agg = np.zeros((n_worker, n_task_groups), dtype=int,)
+    tier_ratio = np.zeros((n_worker, n_task_groups), dtype=int,)
 
     group_outputs = []
     for g in range(n_task_groups):
@@ -454,6 +496,7 @@ def extract_spectral_worker_features(
             R_obs[tasks_g, :],
             n_worker=n_worker,
             n_categories=n_categories,
+            hq_ratio=hq_ratio,
             K=K,
             min_coverage=min_coverage,
             n_init=n_init,
@@ -470,6 +513,8 @@ def extract_spectral_worker_features(
         tested_mask[:, g] = out_g["tested_mask"]
         tier_spectral[:, g] = out_g["tier_spectral"]
         tier_kmeans[:, g] = out_g["tier_kmeans"]
+        tier_agg[:, g] = out_g["tier_agg"]
+        tier_ratio[:, g] = out_g["tier_ratio"]
         
         # Workers identified as LQ in every task group.
         # Require the worker to have actually been tested in every group so that
@@ -487,7 +532,7 @@ def extract_spectral_worker_features(
         "tier_kmeans": tier_kmeans,
         "tier_agg": tier_agg,
         "tier_hybrid": tier_hybrid,
-    
+        "tier_ratio": tier_ratio,
         "global_lq_mask": global_lq_mask,
         "warm_worker_mask": warm_worker_mask,
     
@@ -553,6 +598,7 @@ def _hq_and_label_infer(
     n_task,
     n_worker,
     n_task_groups,
+    hq_ratio,
     LABEL_MODE="task",
     verbose=False,
     MIN_COVERAGE=0,
@@ -579,6 +625,7 @@ def _hq_and_label_infer(
         n_task_groups=n_task_groups,
         n_worker=n_worker,
         n_categories=int(np.nanmax(R_obs)) + 1,
+        hq_ratio=hq_ratio,
         K=None,
         min_coverage=MIN_COVERAGE,
     )
@@ -651,3 +698,27 @@ def tier_centers_in_lf_space(B, tier, bias_scheme="free2", verbose=False):
                               "(the degenerate-seed check will fall back).",
                               RuntimeWarning)
     return clusters
+
+def spectral_two_cluster_check(score):
+    x = np.asarray(score).reshape(-1, 1)
+
+    km = KMeans(n_clusters=2, n_init=20, random_state=0).fit(x)
+    labels = km.labels_
+
+    sil = silhouette_score(x, labels)
+
+    vals0 = x[labels == 0].ravel()
+    vals1 = x[labels == 1].ravel()
+
+    m0, m1 = vals0.mean(), vals1.mean()
+    s0, s1 = vals0.std(), vals1.std()
+
+    D = abs(m0 - m1) / np.sqrt((s0**2 + s1**2) / 2)
+
+    print(f"Silhouette = {sil:.3f}")
+    print(f"Ashman's D = {D:.3f}")
+    print(f"Cluster means = {m0:.3f}, {m1:.3f}")
+    print(f"Cluster sizes = {len(vals0)}, {len(vals1)}")
+
+
+
