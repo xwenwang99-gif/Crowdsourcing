@@ -96,9 +96,9 @@ DRAW_HQ_VOTES = 0
 REMOVE_GLOBAL_LQ = False
 SAVE_RESULTS = True     # False: no results/run_<timestamp>/ folder, nothing written to disk
 
-DATASET = "bird"
+DATASET = "Synthetic"
 REAL_DATA = DATASET != "synthetic"   # real data has no true worker tiers / latent factors
-LQ_RATIO = 0.5
+LQ_RATIO = 10
 METHODS = [m for m, on in ENABLE.items() if on]
 
 DATA_KW = dict(                       # getdata_biased arguments, kept in one place
@@ -217,7 +217,7 @@ for i in range(N_RUNS):
         rating, y_true, worker_label, R_obs, task_lf, worker_lf = getdata_biased(**DATA_KW)
     else:
         loader = {"dog": get_DOG, "face": get_FACE, "bird": get_BIRD}[DATASET]
-        rating, y_true, R_obs, N_TASK, N_WORKER, N_TASK_GROUPS = loader(r=LQ_RATIO)
+        rating, y_true, R_obs, N_TASK, N_WORKER, N_TASK_GROUPS = loader(r=LQ_RATIO, seed = i)
         worker_label = task_lf = worker_lf = None   # no ground-truth worker tiers
     '''
     # -----------------------
@@ -262,7 +262,7 @@ for i in range(N_RUNS):
         tier_lists["Likelihood"]["pred"].append(yp_tier)
     if ENABLE["Likelihood"]:    
         #y_pred = model._mc_infer(rating )
-        y_pred = model._mc_infer(rating)
+        y_pred = model._mc_infer_by_task(rating)
         metrics["Likelihood"]["cluster_acc"].append(cluster_acc)
         produced["Likelihood"] = y_pred.astype(int)
 
@@ -350,7 +350,8 @@ for i in range(N_RUNS):
                 LABEL_MODE="task", verbose=False,
                 MIN_COVERAGE=0, return_spectral=False,
             )
-    
+
+                
             if not REAL_DATA:
                 yt_tier, yp_tier = build_tier_vectors(
                     worker_label, hq_workers_pred2, biased_workers_pred2,
