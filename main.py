@@ -56,14 +56,14 @@ from src.Diagnosis import (
 from src.hq_vote_diagnostic import hq_vote_report
 from src.peera import peerA
 from src.hq_vote_diagnostic import hq_vote_report, plot_worker_lf_pca,true_tier_centers, plot_loss_trajectory
-
+from sklearn.metrics import adjusted_rand_score
 
 warnings.filterwarnings("ignore")
 
 # --------------------------------------------------------------------------- #
 #  configuration
 # --------------------------------------------------------------------------- #
-N_RUNS        = 5
+N_RUNS        = 1
 MAXITER       = 100
 N_TASK        = 200
 N_WORKER      = 400
@@ -74,12 +74,12 @@ LAMBDA2_0 = 1
 LAMBDA2_1 = 1
 # which methods to run (replaces the eigen_ex / DS_ex / ... flags)
 
-DRAW_SPECTRAL = 1
+DRAW_SPECTRAL = 0
 DRAW_HQ_VOTES = 0
 REMOVE_GLOBAL_LQ = False
-SAVE_RESULTS = True   # False: no results/run_<timestamp>/ folder, nothing written to disk
-HQ_RATIO = 1/10
-DATASET = "synthetic"
+SAVE_RESULTS = True  # False: no results/run_<timestamp>/ folder, nothing written to disk
+HQ_RATIO = 1/30
+DATASET = "netease"
 REAL_DATA = DATASET != "synthetic"   # real data has no true worker tiers / latent factors
 LQ_RATIO = 5
 
@@ -104,7 +104,7 @@ METHODS = [m for m, on in ENABLE.items() if on]
 DATA_KW = dict(                       # getdata_biased arguments, kept in one place
     n_task=N_TASK, n_worker=N_WORKER, n_task_groups=N_TASK_GROUPS,
     k=3, sigma=1, obs_prob=1, hq_ratio=1/6, bias_ratio=0,
-    delta=1, n_classes=N_TASK_GROUPS,
+    delta=1, n_classes=N_TASK_GROUPS,rho = 1/2
 )
 
 # --------------------------------------------------------------------------- #
@@ -181,6 +181,14 @@ def build_summary(metrics):
                 "Cluster Acc": c["mean"], "Cluster sd": c["sd"],
                 "Cluster CI":  [round(c["ci_low"], 4), round(c["ci_high"], 4)],
             })
+
+        if metrics[name].get("cluster_ari"):
+            ari = summarize_runs(metrics[name]["cluster_ari"])
+            rows[name].update({
+                "Cluster ARI": ari["mean"],
+                "ARI sd": ari["sd"],
+                "ARI CI": [round(ari["ci_low"], 4), round(ari["ci_high"], 4)],
+            })
     return pd.DataFrame.from_dict(rows, orient="index")
 
 def spectral_to_V(hq_workers_pred, biased_workers_pred, n_worker, n_groups):
@@ -202,7 +210,7 @@ def spectral_to_V(hq_workers_pred, biased_workers_pred, n_worker, n_groups):
 # cluster_acc -- best accuracy over label permutations.  The LFGP-based methods
 #                record it themselves from their task grouping U; every other
 #                method gets it from its predicted labels in evaluate().
-metrics = {m: {"accuracy": [], "macro_f1": [], "bal_acc": [], "cluster_acc": []}
+metrics = {m: {"accuracy": [], "macro_f1": [], "bal_acc": [], "cluster_acc": [], "cluster_ari": [],}
            for m in METHODS}
 
 start = time.perf_counter()
@@ -250,6 +258,7 @@ for i in range(N_RUNS):
         )
         pred_group = U.astype(int)
         cluster_acc = model.task_acc(pred_group, task_group)
+        cluster_ari = adjusted_rand_score(task_group, pred_group)
 
     if ENABLE["Likelihood"] and not REAL_DATA:
         # likelihood step only: majority vote of the fit's own HQ workers (V) 
@@ -260,11 +269,13 @@ for i in range(N_RUNS):
             pred_group, y_true, N_TASK_GROUPS)
         tier_lists["Likelihood"]["true"].append(yt_tier)
         tier_lists["Likelihood"]["pred"].append(yp_tier)
+
     if ENABLE["Likelihood"]:    
         #y_pred = model._mc_infer(rating )
         y_pred = model._mc_infer_by_task(rating)
         metrics["Likelihood"]["cluster_acc"].append(cluster_acc)
         produced["Likelihood"] = y_pred.astype(int)
+        metrics["Likelihood"]["cluster_ari"].append(cluster_ari)
 
     if ENABLE["Eigen_L2"]:        
         _, y_pred, hq_workers_pred, biased_workers_pred, spectral = _hq_and_label_infer(
@@ -273,12 +284,13 @@ for i in range(N_RUNS):
             LABEL_MODE="task", verbose=False,
             MIN_COVERAGE=0, return_spectral=True,
         )
-        plot_spectral_diagnostics(
-            spectral,
-            save_dir=OUT_DIR,
-            run=i,
-            draw=DRAW_SPECTRAL
-        )
+        if DRAW_SPECTRAL:
+            plot_spectral_diagnostics(
+                spectral,
+                save_dir=OUT_DIR,
+                run=i,
+                draw=DRAW_SPECTRAL
+            )
                 
         if not REAL_DATA:
             print_spectral_worker_comparison(
@@ -433,7 +445,7 @@ for i in range(N_RUNS):
     if ENABLE["DS"]:
         y_pred = model._init_task_member_ds(rating)[:, 1]
         #cluster_acc = model.task_acc(y_pred, task_group)
-        metrics["DS"]["cluster_acc"].append(cluster_acc)
+        #metrics["DS"]["cluster_acc"].append(cluster_acc)
         produced["DS"] = y_pred        
 
     if ENABLE["MV_HQ"]:
@@ -470,13 +482,49 @@ for i in range(N_RUNS):
         produced["MultiSPA"] = y_pred
 
     if ENABLE["GTIC"]:
-        y_pred = gtic(
-            rating, n=N_TASK, m=N_WORKER, K=N_TASK_GROUPS, missing_val=-1).y_hat
-        produced["GTIC"] = y_pred
+        model_lfgp = LFGP_PAPER(
+            lf_dim=N_TASK_GROUPS,
+            n_worker_group=N_TASK_GROUPS,
+            lambda1=1,
+            lambda2=1
+        )
+
+        gtic_result = gtic(
+            rating, n=N_TASK, m=N_WORKER,
+            K=N_TASK_GROUPS, missing_val=-1
+        )
+
+        # Raw K-means task clusters
+        gtic_group = gtic_result.cluster_id
+
+        cluster_acc = model_lfgp.task_acc(gtic_group, task_group)
+        cluster_ari = adjusted_rand_score(task_group, gtic_group)
+
+        metrics["GTIC"]["cluster_acc"].append(cluster_acc)
+        metrics["GTIC"]["cluster_ari"].append(cluster_ari)
+
+        # Final GTIC class prediction
+        produced["GTIC"] = gtic_result.y_hat
     if ENABLE["LFGP"]:
-        model_lfgp = LFGP_PAPER(lf_dim=N_TASK_GROUPS, n_worker_group=N_TASK_GROUPS, lambda1=1, lambda2=1)
+        model_lfgp = LFGP_PAPER(
+            lf_dim=N_TASK_GROUPS,
+            n_worker_group=N_TASK_GROUPS,
+            lambda1=1,
+            lambda2=1
+        )
         model_lfgp._prescreen(rating)
         model_lfgp._mc_fit(rating, scheme="ds", epsilon=1e-2, maxiter=MAXITER, verbose=0)
+
+        # Raw task-group assignment from LFGP
+        lfgp_group = model_lfgp.U.astype(int)
+
+        cluster_acc = model_lfgp.task_acc(lfgp_group, task_group)
+        cluster_ari = adjusted_rand_score(task_group, lfgp_group)
+
+        metrics["LFGP"]["cluster_acc"].append(cluster_acc)
+        metrics["LFGP"]["cluster_ari"].append(cluster_ari)
+
+        # Final inferred labels
         y_pred = model_lfgp._mc_infer(rating)[:, 1].astype(int)
         produced["LFGP"] = y_pred
         

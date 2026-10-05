@@ -797,6 +797,12 @@ class LFGP_PAPER():
 
         return label
 
+    def task_acc(self, data, key):
+        membership = self.label_swap(data, key)
+        data = np.asarray(data, dtype=int)
+        key = np.asarray(key, dtype=int)
+        return np.mean(membership == key)
+
 
 
 
