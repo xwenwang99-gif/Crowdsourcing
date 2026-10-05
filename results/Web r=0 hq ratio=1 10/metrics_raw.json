@@ -1,0 +1,64 @@
+{
+  "Eigen_L2": {
+    "accuracy": [
+      0.872
+    ],
+    "macro_f1": [
+      0.8711257782022261
+    ],
+    "bal_acc": [
+      0.8720000000000001
+    ],
+    "cluster_acc": [
+      0.8
+    ],
+    "cluster_ari": []
+  },
+  "Likelihood": {
+    "accuracy": [
+      0.82
+    ],
+    "macro_f1": [
+      0.8163749160222018
+    ],
+    "bal_acc": [
+      0.82
+    ],
+    "cluster_acc": [
+      0.8
+    ],
+    "cluster_ari": [
+      0.5975302655256106
+    ]
+  },
+  "DS": {
+    "accuracy": [
+      0.83
+    ],
+    "macro_f1": [
+      0.8288615146668847
+    ],
+    "bal_acc": [
+      0.8300000000000001
+    ],
+    "cluster_acc": [
+      0.83
+    ],
+    "cluster_ari": []
+  },
+  "MV": {
+    "accuracy": [
+      0.792
+    ],
+    "macro_f1": [
+      0.7870722218881656
+    ],
+    "bal_acc": [
+      0.792
+    ],
+    "cluster_acc": [
+      0.792
+    ],
+    "cluster_ari": []
+  }
+}

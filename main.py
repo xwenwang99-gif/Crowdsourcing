@@ -33,12 +33,13 @@ from sklearn.metrics import (
 from src.DOG import get_DOG
 from src.FACE import get_FACE
 from src.BIRD import get_BIRD
+from src.WEB import get_WEB
 from src.lfgp_withoutO_new import LFGP
 from src.lfgp_paper import LFGP_PAPER
 from src.GTIC import gtic
 from src.CBCC import cbcc
+from src.CF import get_CF
 from src.NetEaseCrowd import get_NETEASE
-from src.multispa import multispa_fit_predict
 from src.getdata_biased import getdata_biased
 from src.getdata_new import getdata_new
 from src.eigenInfer import _hq_and_label_infer, tier_centers_in_lf_space
@@ -64,7 +65,7 @@ warnings.filterwarnings("ignore")
 #  configuration
 # --------------------------------------------------------------------------- #
 N_RUNS        = 1
-MAXITER       = 100
+MAXITER       = 200
 N_TASK        = 200
 N_WORKER      = 400
 N_TASK_GROUPS = 5
@@ -78,8 +79,8 @@ DRAW_SPECTRAL = 0
 DRAW_HQ_VOTES = 0
 REMOVE_GLOBAL_LQ = False
 SAVE_RESULTS = True  # False: no results/run_<timestamp>/ folder, nothing written to disk
-HQ_RATIO = 1/30
-DATASET = "netease"
+HQ_RATIO = 1/10
+DATASET = "dog"
 REAL_DATA = DATASET != "synthetic"   # real data has no true worker tiers / latent factors
 LQ_RATIO = 5
 
@@ -92,19 +93,19 @@ ENABLE = {
     "DS":       1,
     "MV_HQ":    0,
     "MV":       1,
-    "GLAD":     0,
-    "MultiSPA": 0,
-    "GTIC":     0,
-    "LFGP":     0,
-    "CBCC":     0,
+    "GLAD":     1,
+    "GTIC":     1,
+    "LFGP":     1,
+    "CBCC":     1,
 }
 
 METHODS = [m for m, on in ENABLE.items() if on]
+FIT_SEEDS = {"ours": 10000,"GLAD": 20000,"MultiSPA": 30000,"GTIC": 40000,"LFGP": 50000,"CBCC": 60000,}
 
 DATA_KW = dict(                       # getdata_biased arguments, kept in one place
     n_task=N_TASK, n_worker=N_WORKER, n_task_groups=N_TASK_GROUPS,
     k=3, sigma=1, obs_prob=1, hq_ratio=1/6, bias_ratio=0,
-    delta=1, n_classes=N_TASK_GROUPS,rho = 1/2
+    delta=1, n_classes=N_TASK_GROUPS,rho = 0
 )
 
 # --------------------------------------------------------------------------- #
@@ -115,6 +116,19 @@ OUT_DIR = os.path.join("results", f"run_{RUN_ID}")
 if SAVE_RESULTS:
     os.makedirs(OUT_DIR, exist_ok=True)
 
+def set_seed(seed):
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(seed)
+
+def get_fit_seed(method, run):
+    if REAL_DATA:
+        return FIT_SEEDS[method]       # fixed for real data
+    else:
+        return FIT_SEEDS[method] + run # varies for synthetic data
 
 def out_path(name):
     return os.path.join(OUT_DIR, name) if SAVE_RESULTS else None
@@ -219,28 +233,15 @@ removed_worker_records = []
 # per-method worker-tier vectors:  tier_lists[method]["true"/"pred"] -> list over runs
 tier_lists = {name: {"true": [], "pred": []}
               for name in ("Eigen_L2", "Likelihood", "Likelihood2", "Eigen_L2_v2", "Eigen_Oracle",)}
+if DATASET != "synthetic":
+    loader = {"dog": get_DOG, "face": get_FACE, "bird": get_BIRD, "netease": get_NETEASE, "web": get_WEB, "cf": get_CF,}[DATASET]
+    rating, y_true, task_group, R_obs, N_TASK, N_WORKER, N_TASK_GROUPS = loader(r=LQ_RATIO, seed = 999)
+    worker_label = task_lf = worker_lf = None   # no ground-truth worker tiers
 for i in range(N_RUNS):
-    np.random.seed(i)
     if DATASET == "synthetic":
+        np.random.seed(i)
         rating, y_true, task_group, worker_label, R_obs, task_lf, worker_lf = getdata_biased(**DATA_KW)
-    else:
-        loader = {"dog": get_DOG, "face": get_FACE, "bird": get_BIRD, "netease": get_NETEASE}[DATASET]
-        rating, y_true, task_group, R_obs, N_TASK, N_WORKER, N_TASK_GROUPS = loader(r=LQ_RATIO, seed = i)
-        worker_label = task_lf = worker_lf = None   # no ground-truth worker tiers
-    '''
-    # -----------------------
-    # Same fitting seed
-    # -----------------------
-    fit_seed = 999
-
-    random.seed(fit_seed)
-    np.random.seed(fit_seed)    
-    torch.manual_seed(fit_seed)
-
-    if torch.cuda.is_available():
-        torch.cuda.manual_seed_all(fit_seed)
-
-    '''
+ 
     produced = {}   # method name -> predicted label vector for this run
 
     # LFGP model is needed by Eigen_L2, Likelihood, and DS
@@ -252,6 +253,7 @@ for i in range(N_RUNS):
 
     # one LFGP fit shared by the likelihood-only and spectral methods
     if ENABLE["Eigen_L2"] or ENABLE["Likelihood"]:
+        set_seed(get_fit_seed("ours", i))
         A, B, U, V, clusters_np = model._mc_fit(
             rating, key=task_group, scheme="ds", U_init=task_group, epsilon=1e-5,
             maxiter=MAXITER, verbose=1,
@@ -473,15 +475,12 @@ for i in range(N_RUNS):
         produced["MV"] = y_pred
 
     if ENABLE["GLAD"]:
+        set_seed(get_fit_seed("GLAD", i))
         y_pred, _ = peerA(rating, N_TASK_GROUPS, N_WORKER)._GLAD()
         produced["GLAD"] = y_pred
 
-    if ENABLE["MultiSPA"]:
-        y_pred = multispa_fit_predict(
-            rating, K=N_TASK_GROUPS, assume_triplets=True).y_hat
-        produced["MultiSPA"] = y_pred
-
     if ENABLE["GTIC"]:
+        set_seed(get_fit_seed("GTIC", i))
         model_lfgp = LFGP_PAPER(
             lf_dim=N_TASK_GROUPS,
             n_worker_group=N_TASK_GROUPS,
@@ -506,6 +505,7 @@ for i in range(N_RUNS):
         # Final GTIC class prediction
         produced["GTIC"] = gtic_result.y_hat
     if ENABLE["LFGP"]:
+        set_seed(get_fit_seed("LFGP", i))
         model_lfgp = LFGP_PAPER(
             lf_dim=N_TASK_GROUPS,
             n_worker_group=N_TASK_GROUPS,
@@ -529,6 +529,7 @@ for i in range(N_RUNS):
         produced["LFGP"] = y_pred
         
     if ENABLE["CBCC"]:
+        set_seed(get_fit_seed("CBCC", i))
         res = cbcc(task = rating[:,0], worker= rating[:,1], label=rating[:,2], n_classes = N_TASK_GROUPS)
         produced["CBCC"] = res["pred"]
         

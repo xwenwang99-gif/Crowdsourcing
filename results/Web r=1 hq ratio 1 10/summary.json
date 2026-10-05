@@ -1,0 +1,125 @@
+{
+  "Eigen_L2": {
+    "Accuracy": 0.472,
+    "Acc sd": 0.0,
+    "Acc CI": [
+      0.472,
+      0.472
+    ],
+    "Macro F1": 0.4660701622206046,
+    "F1 sd": 0.0,
+    "F1 CI": [
+      0.4661,
+      0.4661
+    ],
+    "Balanced Acc": 0.472,
+    "Bal sd": 0.0,
+    "Bal CI": [
+      0.472,
+      0.472
+    ],
+    "n_runs": 1,
+    "Cluster Acc": 0.372,
+    "Cluster sd": 0.0,
+    "Cluster CI": [
+      0.372,
+      0.372
+    ],
+    "Cluster ARI": NaN,
+    "ARI sd": NaN,
+    "ARI CI": NaN
+  },
+  "Likelihood": {
+    "Accuracy": 0.312,
+    "Acc sd": 0.0,
+    "Acc CI": [
+      0.312,
+      0.312
+    ],
+    "Macro F1": 0.3082456221952314,
+    "F1 sd": 0.0,
+    "F1 CI": [
+      0.3082,
+      0.3082
+    ],
+    "Balanced Acc": 0.312,
+    "Bal sd": 0.0,
+    "Bal CI": [
+      0.312,
+      0.312
+    ],
+    "n_runs": 1,
+    "Cluster Acc": 0.372,
+    "Cluster sd": 0.0,
+    "Cluster CI": [
+      0.372,
+      0.372
+    ],
+    "Cluster ARI": 0.08672248266807404,
+    "ARI sd": 0.0,
+    "ARI CI": [
+      0.0867,
+      0.0867
+    ]
+  },
+  "DS": {
+    "Accuracy": 0.406,
+    "Acc sd": 0.0,
+    "Acc CI": [
+      0.406,
+      0.406
+    ],
+    "Macro F1": 0.4028675959757336,
+    "F1 sd": 0.0,
+    "F1 CI": [
+      0.4029,
+      0.4029
+    ],
+    "Balanced Acc": 0.406,
+    "Bal sd": 0.0,
+    "Bal CI": [
+      0.406,
+      0.406
+    ],
+    "n_runs": 1,
+    "Cluster Acc": 0.406,
+    "Cluster sd": 0.0,
+    "Cluster CI": [
+      0.406,
+      0.406
+    ],
+    "Cluster ARI": NaN,
+    "ARI sd": NaN,
+    "ARI CI": NaN
+  },
+  "MV": {
+    "Accuracy": 0.324,
+    "Acc sd": 0.0,
+    "Acc CI": [
+      0.324,
+      0.324
+    ],
+    "Macro F1": 0.32353459871936086,
+    "F1 sd": 0.0,
+    "F1 CI": [
+      0.3235,
+      0.3235
+    ],
+    "Balanced Acc": 0.324,
+    "Bal sd": 0.0,
+    "Bal CI": [
+      0.324,
+      0.324
+    ],
+    "n_runs": 1,
+    "Cluster Acc": 0.324,
+    "Cluster sd": 0.0,
+    "Cluster CI": [
+      0.324,
+      0.324
+    ],
+    "Cluster ARI": NaN,
+    "ARI sd": NaN,
+    "ARI CI": NaN
+  }
+}

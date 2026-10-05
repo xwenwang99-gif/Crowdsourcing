@@ -1,0 +1,125 @@
+{
+  "Eigen_L2": {
+    "Accuracy": 0.28,
+    "Acc sd": 0.0,
+    "Acc CI": [
+      0.28,
+      0.28
+    ],
+    "Macro F1": 0.2773019218322445,
+    "F1 sd": 0.0,
+    "F1 CI": [
+      0.2773,
+      0.2773
+    ],
+    "Balanced Acc": 0.28,
+    "Bal sd": 0.0,
+    "Bal CI": [
+      0.28,
+      0.28
+    ],
+    "n_runs": 1,
+    "Cluster Acc": 0.274,
+    "Cluster sd": 0.0,
+    "Cluster CI": [
+      0.274,
+      0.274
+    ],
+    "Cluster ARI": NaN,
+    "ARI sd": NaN,
+    "ARI CI": NaN
+  },
+  "Likelihood": {
+    "Accuracy": 0.194,
+    "Acc sd": 0.0,
+    "Acc CI": [
+      0.194,
+      0.194
+    ],
+    "Macro F1": 0.19461597941885184,
+    "F1 sd": 0.0,
+    "F1 CI": [
+      0.1946,
+      0.1946
+    ],
+    "Balanced Acc": 0.194,
+    "Bal sd": 0.0,
+    "Bal CI": [
+      0.194,
+      0.194
+    ],
+    "n_runs": 1,
+    "Cluster Acc": 0.274,
+    "Cluster sd": 0.0,
+    "Cluster CI": [
+      0.274,
+      0.274
+    ],
+    "Cluster ARI": 0.011291905258761217,
+    "ARI sd": 0.0,
+    "ARI CI": [
+      0.0113,
+      0.0113
+    ]
+  },
+  "DS": {
+    "Accuracy": 0.206,
+    "Acc sd": 0.0,
+    "Acc CI": [
+      0.206,
+      0.206
+    ],
+    "Macro F1": 0.2063526616322046,
+    "F1 sd": 0.0,
+    "F1 CI": [
+      0.2064,
+      0.2064
+    ],
+    "Balanced Acc": 0.20600000000000002,
+    "Bal sd": 0.0,
+    "Bal CI": [
+      0.206,
+      0.206
+    ],
+    "n_runs": 1,
+    "Cluster Acc": 0.276,
+    "Cluster sd": 0.0,
+    "Cluster CI": [
+      0.276,
+      0.276
+    ],
+    "Cluster ARI": NaN,
+    "ARI sd": NaN,
+    "ARI CI": NaN
+  },
+  "MV": {
+    "Accuracy": 0.204,
+    "Acc sd": 0.0,
+    "Acc CI": [
+      0.204,
+      0.204
+    ],
+    "Macro F1": 0.20451355487296521,
+    "F1 sd": 0.0,
+    "F1 CI": [
+      0.2045,
+      0.2045
+    ],
+    "Balanced Acc": 0.20400000000000001,
+    "Bal sd": 0.0,
+    "Bal CI": [
+      0.204,
+      0.204
+    ],
+    "n_runs": 1,
+    "Cluster Acc": 0.246,
+    "Cluster sd": 0.0,
+    "Cluster CI": [
+      0.246,
+      0.246
+    ],
+    "Cluster ARI": NaN,
+    "ARI sd": NaN,
+    "ARI CI": NaN
+  }
+}

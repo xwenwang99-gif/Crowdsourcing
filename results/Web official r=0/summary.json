@@ -1,0 +1,251 @@
+{
+  "Eigen_L2": {
+    "Accuracy": 0.861,
+    "Acc sd": 0.0,
+    "Acc CI": [
+      0.861,
+      0.861
+    ],
+    "Macro F1": 0.859036493688104,
+    "F1 sd": 0.0,
+    "F1 CI": [
+      0.859,
+      0.859
+    ],
+    "Balanced Acc": 0.861,
+    "Bal sd": 0.0,
+    "Bal CI": [
+      0.861,
+      0.861
+    ],
+    "n_runs": 1,
+    "Cluster Acc": 0.831,
+    "Cluster sd": 0.0,
+    "Cluster CI": [
+      0.831,
+      0.831
+    ],
+    "Cluster ARI": NaN,
+    "ARI sd": NaN,
+    "ARI CI": NaN
+  },
+  "Likelihood": {
+    "Accuracy": 0.8,
+    "Acc sd": 0.0,
+    "Acc CI": [
+      0.8,
+      0.8
+    ],
+    "Macro F1": 0.7941154764898831,
+    "F1 sd": 0.0,
+    "F1 CI": [
+      0.7941,
+      0.7941
+    ],
+    "Balanced Acc": 0.7999999999999999,
+    "Bal sd": 0.0,
+    "Bal CI": [
+      0.8,
+      0.8
+    ],
+    "n_runs": 1,
+    "Cluster Acc": 0.831,
+    "Cluster sd": 0.0,
+    "Cluster CI": [
+      0.831,
+      0.831
+    ],
+    "Cluster ARI": 0.6425265453726954,
+    "ARI sd": 0.0,
+    "ARI CI": [
+      0.6425,
+      0.6425
+    ]
+  },
+  "DS": {
+    "Accuracy": 0.832,
+    "Acc sd": 0.0,
+    "Acc CI": [
+      0.832,
+      0.832
+    ],
+    "Macro F1": 0.8323569580902943,
+    "F1 sd": 0.0,
+    "F1 CI": [
+      0.8324,
+      0.8324
+    ],
+    "Balanced Acc": 0.8320000000000001,
+    "Bal sd": 0.0,
+    "Bal CI": [
+      0.832,
+      0.832
+    ],
+    "n_runs": 1,
+    "Cluster Acc": 0.832,
+    "Cluster sd": 0.0,
+    "Cluster CI": [
+      0.832,
+      0.832
+    ],
+    "Cluster ARI": NaN,
+    "ARI sd": NaN,
+    "ARI CI": NaN
+  },
+  "MV": {
+    "Accuracy": 0.807,
+    "Acc sd": 0.0,
+    "Acc CI": [
+      0.807,
+      0.807
+    ],
+    "Macro F1": 0.8027362180945499,
+    "F1 sd": 0.0,
+    "F1 CI": [
+      0.8027,
+      0.8027
+    ],
+    "Balanced Acc": 0.807,
+    "Bal sd": 0.0,
+    "Bal CI": [
+      0.807,
+      0.807
+    ],
+    "n_runs": 1,
+    "Cluster Acc": 0.807,
+    "Cluster sd": 0.0,
+    "Cluster CI": [
+      0.807,
+      0.807
+    ],
+    "Cluster ARI": NaN,
+    "ARI sd": NaN,
+    "ARI CI": NaN
+  },
+  "GLAD": {
+    "Accuracy": 0.228,
+    "Acc sd": 0.0,
+    "Acc CI": [
+      0.228,
+      0.228
+    ],
+    "Macro F1": 0.20818369398241657,
+    "F1 sd": 0.0,
+    "F1 CI": [
+      0.2082,
+      0.2082
+    ],
+    "Balanced Acc": 0.22800000000000004,
+    "Bal sd": 0.0,
+    "Bal CI": [
+      0.228,
+      0.228
+    ],
+    "n_runs": 1,
+    "Cluster Acc": 0.257,
+    "Cluster sd": 0.0,
+    "Cluster CI": [
+      0.257,
+      0.257
+    ],
+    "Cluster ARI": NaN,
+    "ARI sd": NaN,
+    "ARI CI": NaN
+  },
+  "GTIC": {
+    "Accuracy": 0.792,
+    "Acc sd": 0.0,
+    "Acc CI": [
+      0.792,
+      0.792
+    ],
+    "Macro F1": 0.7908775947079143,
+    "F1 sd": 0.0,
+    "F1 CI": [
+      0.7909,
+      0.7909
+    ],
+    "Balanced Acc": 0.792,
+    "Bal sd": 0.0,
+    "Bal CI": [
+      0.792,
+      0.792
+    ],
+    "n_runs": 1,
+    "Cluster Acc": 0.792,
+    "Cluster sd": 0.0,
+    "Cluster CI": [
+      0.792,
+      0.792
+    ],
+    "Cluster ARI": 0.5584051139788432,
+    "ARI sd": 0.0,
+    "ARI CI": [
+      0.5584,
+      0.5584
+    ]
+  },
+  "LFGP": {
+    "Accuracy": 0.663,
+    "Acc sd": 0.0,
+    "Acc CI": [
+      0.663,
+      0.663
+    ],
+    "Macro F1": 0.6626352735280834,
+    "F1 sd": 0.0,
+    "F1 CI": [
+      0.6626,
+      0.6626
+    ],
+    "Balanced Acc": 0.663,
+    "Bal sd": 0.0,
+    "Bal CI": [
+      0.663,
+      0.663
+    ],
+    "n_runs": 1,
+    "Cluster Acc": 0.663,
+    "Cluster sd": 0.0,
+    "Cluster CI": [
+      0.663,
+      0.663
+    ],
+    "Cluster ARI": 0.35209920864607475,
+    "ARI sd": 0.0,
+    "ARI CI": [
+      0.3521,
+      0.3521
+    ]
+  },
+  "CBCC": {
+    "Accuracy": 0.758,
+    "Acc sd": 0.0,
+    "Acc CI": [
+      0.758,
+      0.758
+    ],
+    "Macro F1": 0.7347910036257713,
+    "F1 sd": 0.0,
+    "F1 CI": [
+      0.7348,
+      0.7348
+    ],
+    "Balanced Acc": 0.758,
+    "Bal sd": 0.0,
+    "Bal CI": [
+      0.758,
+      0.758
+    ],
+    "n_runs": 1,
+    "Cluster Acc": 0.758,
+    "Cluster sd": 0.0,
+    "Cluster CI": [
+      0.758,
+      0.758
+    ],
+    "Cluster ARI": NaN,
+    "ARI sd": NaN,
+    "ARI CI": NaN
+  }
+}

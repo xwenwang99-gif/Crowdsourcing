@@ -1,0 +1,128 @@
+{
+  "Eigen_L2": {
+    "accuracy": [
+      0.861
+    ],
+    "macro_f1": [
+      0.859036493688104
+    ],
+    "bal_acc": [
+      0.861
+    ],
+    "cluster_acc": [
+      0.831
+    ],
+    "cluster_ari": []
+  },
+  "Likelihood": {
+    "accuracy": [
+      0.8
+    ],
+    "macro_f1": [
+      0.7941154764898831
+    ],
+    "bal_acc": [
+      0.7999999999999999
+    ],
+    "cluster_acc": [
+      0.831
+    ],
+    "cluster_ari": [
+      0.6425265453726954
+    ]
+  },
+  "DS": {
+    "accuracy": [
+      0.832
+    ],
+    "macro_f1": [
+      0.8323569580902943
+    ],
+    "bal_acc": [
+      0.8320000000000001
+    ],
+    "cluster_acc": [
+      0.832
+    ],
+    "cluster_ari": []
+  },
+  "MV": {
+    "accuracy": [
+      0.807
+    ],
+    "macro_f1": [
+      0.8027362180945499
+    ],
+    "bal_acc": [
+      0.807
+    ],
+    "cluster_acc": [
+      0.807
+    ],
+    "cluster_ari": []
+  },
+  "GLAD": {
+    "accuracy": [
+      0.228
+    ],
+    "macro_f1": [
+      0.20818369398241657
+    ],
+    "bal_acc": [
+      0.22800000000000004
+    ],
+    "cluster_acc": [
+      0.257
+    ],
+    "cluster_ari": []
+  },
+  "GTIC": {
+    "accuracy": [
+      0.792
+    ],
+    "macro_f1": [
+      0.7908775947079143
+    ],
+    "bal_acc": [
+      0.792
+    ],
+    "cluster_acc": [
+      0.792
+    ],
+    "cluster_ari": [
+      0.5584051139788432
+    ]
+  },
+  "LFGP": {
+    "accuracy": [
+      0.663
+    ],
+    "macro_f1": [
+      0.6626352735280834
+    ],
+    "bal_acc": [
+      0.663
+    ],
+    "cluster_acc": [
+      0.663
+    ],
+    "cluster_ari": [
+      0.35209920864607475
+    ]
+  },
+  "CBCC": {
+    "accuracy": [
+      0.758
+    ],
+    "macro_f1": [
+      0.7347910036257713
+    ],
+    "bal_acc": [
+      0.758
+    ],
+    "cluster_acc": [
+      0.758
+    ],
+    "cluster_ari": []
+  }
+}
