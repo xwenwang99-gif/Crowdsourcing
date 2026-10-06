@@ -29,6 +29,8 @@ from sklearn.metrics import (
     confusion_matrix,
     f1_score,
     adjusted_rand_score,
+    normalized_mutual_info_score,
+    recall_score,
 )
 from src.DOG import get_DOG
 from src.FACE import get_FACE
@@ -41,7 +43,6 @@ from src.CBCC import cbcc
 from src.CF import get_CF
 from src.NetEaseCrowd import get_NETEASE
 from src.getdata_biased import getdata_biased
-from src.getdata_new import getdata_new
 from src.eigenInfer import _hq_and_label_infer, tier_centers_in_lf_space
 from src.Diagnosis import (
     diagnose, 
@@ -51,7 +52,6 @@ from src.Diagnosis import (
     worker_diagnose_runs, 
     plot_tier_confusion,
     build_worker_summary, 
-    print_spectral_worker_comparison,
     task_group_mapping,
     plot_spectral_diagnostics)
 from src.hq_vote_diagnostic import hq_vote_report
@@ -64,7 +64,7 @@ warnings.filterwarnings("ignore")
 # --------------------------------------------------------------------------- #
 #  configuration
 # --------------------------------------------------------------------------- #
-N_RUNS        = 1
+N_RUNS        = 10
 MAXITER       = 200
 N_TASK        = 200
 N_WORKER      = 400
@@ -73,30 +73,31 @@ N_TASK_GROUPS = 5
 LAMBDA1 = 1
 LAMBDA2_0 = 1
 LAMBDA2_1 = 1
+HQ_RATIO = 1/30
+DATASET = "synthetic"
+REAL_DATA = DATASET != "synthetic"   # real data has no true worker tiers / latent factors
+LQ_RATIO =2
 # which methods to run (replaces the eigen_ex / DS_ex / ... flags)
 
 DRAW_SPECTRAL = 0
 DRAW_HQ_VOTES = 0
 REMOVE_GLOBAL_LQ = False
 SAVE_RESULTS = True  # False: no results/run_<timestamp>/ folder, nothing written to disk
-HQ_RATIO = 1/10
-DATASET = "dog"
-REAL_DATA = DATASET != "synthetic"   # real data has no true worker tiers / latent factors
-LQ_RATIO = 5
+
 
 ENABLE = {
-    "Eigen_L2":   1,   # LFGP fit + spectral worker tiering
-    "Likelihood": 1,   # same LFGP fit, labels via _mc_infer_by_task (no spectral step)
+    "Eigen_L2":   0,   # LFGP fit + spectral worker tiering
+    "Likelihood": 0,   # same LFGP fit, labels via _mc_infer_by_task (no spectral step)
     "Likelihood2":  0,   # warm-restarted likelihood, init from spectral tiers
     "Eigen_L2_v2":  0,
     "Eigen_Oracle": 0,   # spectral tiering + label infer on the TRUE task grouping
-    "DS":       1,
+    "DS":       0,
     "MV_HQ":    0,
-    "MV":       1,
-    "GLAD":     1,
-    "GTIC":     1,
+    "MV":       0,
+    "GLAD":     0,
+    "GTIC":     0,
     "LFGP":     1,
-    "CBCC":     1,
+    "CBCC":     0,
 }
 
 METHODS = [m for m, on in ENABLE.items() if on]
@@ -104,8 +105,8 @@ FIT_SEEDS = {"ours": 10000,"GLAD": 20000,"MultiSPA": 30000,"GTIC": 40000,"LFGP":
 
 DATA_KW = dict(                       # getdata_biased arguments, kept in one place
     n_task=N_TASK, n_worker=N_WORKER, n_task_groups=N_TASK_GROUPS,
-    k=3, sigma=1, obs_prob=1, hq_ratio=1/6, bias_ratio=0,
-    delta=1, n_classes=N_TASK_GROUPS,rho = 0
+    k=3, sigma=1, obs_prob=1, hq_ratio=1/30, bias_ratio=0,
+    delta=1, n_classes=N_TASK_GROUPS,rho = 0, random = True, draw_latent_heatmap = False
 )
 
 # --------------------------------------------------------------------------- #
@@ -151,60 +152,111 @@ def save_json(path, obj):
         json.dump(obj, f, indent=2, default=_to_native)
 
 
-# --------------------------------------------------------------------------- #
-#  shared evaluation: every method just hands us a predicted-label vector
-# --------------------------------------------------------------------------- #
-def cluster_accuracy(y_true, y_pred, n_classes):
-    """Best accuracy over all label permutations (Hungarian matching).
-    Predictions outside [0, n_classes) (e.g. -1 for 'no label') count as wrong."""
-    y_true = np.asarray(y_true, dtype=int)
-    y_pred = np.nan_to_num(np.asarray(y_pred, dtype=float), nan=-1).astype(int)
-    valid = (y_pred >= 0) & (y_pred < n_classes)
-    counts = confusion_matrix(y_true[valid], y_pred[valid], labels=np.arange(n_classes))
-    row_ind, col_ind = linear_sum_assignment(-counts)
-    return counts[row_ind, col_ind].sum() / len(y_true)
-
 
 def evaluate(y_true, y_pred, n_classes):
+    y_true = np.asarray(y_true, dtype=int)
+    y_pred = np.nan_to_num(np.asarray(y_pred, dtype=float), nan=-1).astype(int)
+
     acc, macro_f1 = diagnose(y_true, y_pred, n_classes=n_classes)
     bal = balanced_accuracy_score(y_true, y_pred)
-    return {"accuracy": acc, "macro_f1": macro_f1, "bal_acc": bal,
-            "cluster_acc": cluster_accuracy(y_true, y_pred, n_classes)}
+
+    secondary_confusion_by_class = []
+
+    for c in range(n_classes):
+        mask = y_true == c
+
+        if np.any(mask):
+            secondary_class = (c + 1) % n_classes
+
+            secondary_confusion_by_class.append(
+                np.mean(y_pred[mask] == secondary_class)
+            )
+
+    secondary_confusion = float(
+        np.mean(secondary_confusion_by_class)
+    )
+
+    label_nmi = normalized_mutual_info_score(
+        y_true, y_pred, average_method="arithmetic"
+    )
+
+    recalls = recall_score(
+        y_true, y_pred,
+        labels=np.arange(n_classes),
+        average=None,
+        zero_division=0,
+    )
+
+    scores = {
+        "accuracy": acc,
+        "macro_f1": macro_f1,
+        "bal_acc": bal,
+        "label_nmi": label_nmi,
+        "secondary_confusion": secondary_confusion,
+    }
+
+    for k, recall in enumerate(recalls):
+        scores[f"recall_{k + 1}"] = recall
+    return scores
 
 
 def build_summary(metrics):
     rows = {}
+
     for name in METHODS:
         if len(metrics[name]["accuracy"]) == 0:
             continue
+
         a = summarize_runs(metrics[name]["accuracy"])
         f = summarize_runs(metrics[name]["macro_f1"])
         b = summarize_runs(metrics[name]["bal_acc"])
+        lnmi = summarize_runs(metrics[name]["label_nmi"])
+        sec = summarize_runs(metrics[name]["secondary_confusion"])
+
         rows[name] = {
-            "Accuracy":     a["mean"], "Acc sd": a["sd"],
-            "Acc CI":       [round(a["ci_low"], 4), round(a["ci_high"], 4)],
-            "Macro F1":     f["mean"], "F1 sd":  f["sd"],
-            "F1 CI":        [round(f["ci_low"], 4), round(f["ci_high"], 4)],
-            "Balanced Acc": b["mean"], "Bal sd": b["sd"],
-            "Bal CI":       [round(b["ci_low"], 4), round(b["ci_high"], 4)],
-            "n_runs":       a["n"],
+            "Accuracy": a["mean"],
+            "Acc sd": a["sd"],
+            "Acc CI": [round(a["ci_low"], 4), round(a["ci_high"], 4)],
+
+            "Macro F1": f["mean"],
+            "F1 sd": f["sd"],
+            "F1 CI": [round(f["ci_low"], 4), round(f["ci_high"], 4)],
+
+            "Balanced Acc": b["mean"],
+            "Bal sd": b["sd"],
+            "Bal CI": [round(b["ci_low"], 4), round(b["ci_high"], 4)],
+
+            "Label NMI": lnmi["mean"],
+            "Label NMI sd": lnmi["sd"],
+
+            "Secondary Confusion": sec["mean"],
+            "Secondary Confusion sd": sec["sd"],
+
+            "n_runs": a["n"],
         }
-        if metrics[name].get("cluster_acc"):
+
+        for k in range(N_TASK_GROUPS):
+            key = f"recall_{k + 1}"
+            r = summarize_runs(metrics[name][key])
+            rows[name][f"R{k + 1}"] = r["mean"]
+            rows[name][f"R{k + 1} sd"] = r["sd"]
+
+        if metrics[name]["cluster_acc"]:
             c = summarize_runs(metrics[name]["cluster_acc"])
-            rows[name].update({
-                "Cluster Acc": c["mean"], "Cluster sd": c["sd"],
-                "Cluster CI":  [round(c["ci_low"], 4), round(c["ci_high"], 4)],
-            })
+            rows[name]["Cluster Acc"] = c["mean"]
+            rows[name]["Cluster sd"] = c["sd"]
 
-        if metrics[name].get("cluster_ari"):
+        if metrics[name]["cluster_ari"]:
             ari = summarize_runs(metrics[name]["cluster_ari"])
-            rows[name].update({
-                "Cluster ARI": ari["mean"],
-                "ARI sd": ari["sd"],
-                "ARI CI": [round(ari["ci_low"], 4), round(ari["ci_high"], 4)],
-            })
-    return pd.DataFrame.from_dict(rows, orient="index")
+            rows[name]["Cluster ARI"] = ari["mean"]
+            rows[name]["ARI sd"] = ari["sd"]
 
+        if metrics[name]["cluster_nmi"]:
+            cnmi = summarize_runs(metrics[name]["cluster_nmi"])
+            rows[name]["Cluster NMI"] = cnmi["mean"]
+            rows[name]["Cluster NMI sd"] = cnmi["sd"]
+
+    return pd.DataFrame.from_dict(rows, orient="index")
 def spectral_to_V(hq_workers_pred, biased_workers_pred, n_worker, n_groups):
     """Convert per-group HQ/biased index lists into an LFGP-style V matrix
     (n_worker, n_groups), 0=LQ default, in PREDICTED-group coordinates."""
@@ -216,7 +268,6 @@ def spectral_to_V(hq_workers_pred, biased_workers_pred, n_worker, n_groups):
             V_spec[np.asarray(biased_workers_pred[g], dtype=int), g] = 2
     return V_spec
 
-
 # --------------------------------------------------------------------------- #
 #  metric store:  metrics[method][metric] -> list over runs
 # --------------------------------------------------------------------------- #
@@ -224,8 +275,7 @@ def spectral_to_V(hq_workers_pred, biased_workers_pred, n_worker, n_groups):
 # cluster_acc -- best accuracy over label permutations.  The LFGP-based methods
 #                record it themselves from their task grouping U; every other
 #                method gets it from its predicted labels in evaluate().
-metrics = {m: {"accuracy": [], "macro_f1": [], "bal_acc": [], "cluster_acc": [], "cluster_ari": [],}
-           for m in METHODS}
+
 
 start = time.perf_counter()
 removed_worker_records = []
@@ -237,6 +287,9 @@ if DATASET != "synthetic":
     loader = {"dog": get_DOG, "face": get_FACE, "bird": get_BIRD, "netease": get_NETEASE, "web": get_WEB, "cf": get_CF,}[DATASET]
     rating, y_true, task_group, R_obs, N_TASK, N_WORKER, N_TASK_GROUPS = loader(r=LQ_RATIO, seed = 999)
     worker_label = task_lf = worker_lf = None   # no ground-truth worker tiers
+
+metrics = {m: {"accuracy": [], "macro_f1": [], "bal_acc": [], "label_nmi": [], "secondary_confusion": [], **{f"recall_{k + 1}": [] for k in range(N_TASK_GROUPS)},"cluster_acc": [], "cluster_ari": [],"cluster_nmi": [],}
+           for m in METHODS}
 for i in range(N_RUNS):
     if DATASET == "synthetic":
         np.random.seed(i)
@@ -255,12 +308,15 @@ for i in range(N_RUNS):
     if ENABLE["Eigen_L2"] or ENABLE["Likelihood"]:
         set_seed(get_fit_seed("ours", i))
         A, B, U, V, clusters_np = model._mc_fit(
-            rating, key=task_group, scheme="ds", U_init=task_group, epsilon=1e-5,
+            rating, key=task_group, scheme="ds", epsilon=1e-5,
             maxiter=MAXITER, verbose=1,
         )
         pred_group = U.astype(int)
         cluster_acc = model.task_acc(pred_group, task_group)
         cluster_ari = adjusted_rand_score(task_group, pred_group)
+        cluster_nmi = normalized_mutual_info_score(
+            task_group, pred_group, average_method="arithmetic"
+        )
 
     if ENABLE["Likelihood"] and not REAL_DATA:
         # likelihood step only: majority vote of the fit's own HQ workers (V) 
@@ -276,9 +332,10 @@ for i in range(N_RUNS):
         #y_pred = model._mc_infer(rating )
         y_pred = model._mc_infer_by_task(rating)
         metrics["Likelihood"]["cluster_acc"].append(cluster_acc)
-        produced["Likelihood"] = y_pred.astype(int)
         metrics["Likelihood"]["cluster_ari"].append(cluster_ari)
+        metrics["Likelihood"]["cluster_nmi"].append(cluster_nmi)
 
+        produced["Likelihood"] = y_pred.astype(int)
     if ENABLE["Eigen_L2"]:        
         _, y_pred, hq_workers_pred, biased_workers_pred, spectral = _hq_and_label_infer(
             pred_group, R_obs, y_true, worker_label,
@@ -293,14 +350,7 @@ for i in range(N_RUNS):
                 run=i,
                 draw=DRAW_SPECTRAL
             )
-                
-        if not REAL_DATA:
-            print_spectral_worker_comparison(
-                spectral,
-                worker_label,
-                pred_group,
-                task_group,
-            )
+            
 
             yt_tier, yp_tier = build_tier_vectors(
                 worker_label, hq_workers_pred, biased_workers_pred,
@@ -313,6 +363,9 @@ for i in range(N_RUNS):
                y_true=y_true, draw=bool(DRAW_HQ_VOTES) and SAVE_RESULTS)
 
         metrics["Eigen_L2"]["cluster_acc"].append(cluster_acc)
+        metrics["Eigen_L2"]["cluster_ari"].append(cluster_ari)
+        metrics["Eigen_L2"]["cluster_nmi"].append(cluster_nmi)
+
         produced["Eigen_L2"] = y_pred
         if ENABLE["Likelihood2"]:
             V_spec = spectral_to_V(hq_workers_pred, biased_workers_pred,
@@ -498,11 +551,14 @@ for i in range(N_RUNS):
 
         cluster_acc = model_lfgp.task_acc(gtic_group, task_group)
         cluster_ari = adjusted_rand_score(task_group, gtic_group)
+        cluster_nmi = normalized_mutual_info_score(
+            task_group, gtic_group, average_method="arithmetic"
+        )
 
         metrics["GTIC"]["cluster_acc"].append(cluster_acc)
         metrics["GTIC"]["cluster_ari"].append(cluster_ari)
+        metrics["GTIC"]["cluster_nmi"].append(cluster_nmi)
 
-        # Final GTIC class prediction
         produced["GTIC"] = gtic_result.y_hat
     if ENABLE["LFGP"]:
         set_seed(get_fit_seed("LFGP", i))
@@ -520,11 +576,14 @@ for i in range(N_RUNS):
 
         cluster_acc = model_lfgp.task_acc(lfgp_group, task_group)
         cluster_ari = adjusted_rand_score(task_group, lfgp_group)
+        cluster_nmi = normalized_mutual_info_score(
+            task_group, lfgp_group, average_method="arithmetic"
+        )
 
         metrics["LFGP"]["cluster_acc"].append(cluster_acc)
         metrics["LFGP"]["cluster_ari"].append(cluster_ari)
+        metrics["LFGP"]["cluster_nmi"].append(cluster_nmi)
 
-        # Final inferred labels
         y_pred = model_lfgp._mc_infer(rating)[:, 1].astype(int)
         produced["LFGP"] = y_pred
         
@@ -536,8 +595,6 @@ for i in range(N_RUNS):
     # ---- evaluate everything the same way and record ----
     for name, y_pred in produced.items():
         scores = evaluate(y_true, y_pred, N_TASK_GROUPS)
-        if len(metrics[name]["cluster_acc"]) > i:   # already recorded from U
-            scores.pop("cluster_acc")
         for key, val in scores.items():
             metrics[name][key].append(val)
 
