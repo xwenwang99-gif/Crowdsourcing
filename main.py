@@ -86,8 +86,8 @@ SAVE_RESULTS = True  # False: no results/run_<timestamp>/ folder, nothing writte
 
 
 ENABLE = {
-    "Eigen_L2":   0,   # LFGP fit + spectral worker tiering
-    "Likelihood": 0,   # same LFGP fit, labels via _mc_infer_by_task (no spectral step)
+    "Eigen_L2":   1,   # LFGP fit + spectral worker tiering
+    "Likelihood": 1,   # same LFGP fit, labels via _mc_infer_by_task (no spectral step)
     "Likelihood2":  0,   # warm-restarted likelihood, init from spectral tiers
     "Eigen_L2_v2":  0,
     "Eigen_Oracle": 0,   # spectral tiering + label infer on the TRUE task grouping
@@ -96,7 +96,7 @@ ENABLE = {
     "MV":       0,
     "GLAD":     0,
     "GTIC":     0,
-    "LFGP":     1,
+    "LFGP":     0,
     "CBCC":     0,
 }
 
@@ -106,7 +106,7 @@ FIT_SEEDS = {"ours": 10000,"GLAD": 20000,"MultiSPA": 30000,"GTIC": 40000,"LFGP":
 DATA_KW = dict(                       # getdata_biased arguments, kept in one place
     n_task=N_TASK, n_worker=N_WORKER, n_task_groups=N_TASK_GROUPS,
     k=3, sigma=1, obs_prob=1, hq_ratio=1/30, bias_ratio=0,
-    delta=1, n_classes=N_TASK_GROUPS,rho = 0, random = True, draw_latent_heatmap = False
+    delta=1, n_classes=N_TASK_GROUPS,rho = 0, random = False, draw_latent_heatmap = False
 )
 
 # --------------------------------------------------------------------------- #
