@@ -1,0 +1,1031 @@
+# -*- coding: utf-8 -*-
+"""
+Spectral worker-feature extraction aligned with the likelihood/spectral fusion method.
+
+The spectral step is a feature/evidence extractor, not only a hard HQ/biased/LQ
+classifier. For each predicted task group g and worker j it returns
+
+    x_spectral[g, j, :] = Lambda_g^{1/2} V_g[j, :]
+
+CHANGES FROM THE PREVIOUS VERSION
+---------------------------------
+(i)   Centering constant is now 1 / n_categories, not p0 = ||qhat||^2.
+
+      Rationale: with u_ij the chance-centered one-hot of worker j's label on
+      task i, and v_j = pi_j - 1/C its mean, the exact identity is
+
+          E[agreement_{jl}] = <pi_j, pi_l>,   <v_j, v_l> = <pi_j, pi_l> - 1/C.
+
+      Subtracting p0 = ||qhat||^2 >= 1/C over-subtracts by delta = p0 - 1/C,
+      injecting a rank-one -delta * 11^T contaminant. delta grows as the group's
+      pooled marginal concentrates on the true label, i.e. it is worst exactly
+      when the task clustering is good. Its effect is to scramble the *radial*
+      coordinate of the embedding while leaving pairwise distances intact, so
+      the k-means partition survives but the "order clusters by center norm"
+      labeling rule can invert (HQ and biased swap). Under the correct 1/C
+      centering, an LQ worker's population embedding is exactly the origin.
+
+(ii)  K defaults to min(2, n_categories - 1).
+
+      Rationale: the population signal matrix has rank C - 1 capped at 2. For
+      binary labels (C = 2) the biased direction is the negation of the HQ
+      direction, so rank(M) = 1 and there is no second signal eigenvector; the
+      old K = 2 grabbed a bulk eigenvector and folded pure noise into the
+      embedding.
+
+# ------------------------------------------------------------------
+# 3. Worker tiering:
+#       (a) KMeans
+#       (b) Gaussian mixture model
+#
+# Both use exactly the same spectral embedding X.
+# ------------------------------------------------------------------
+
+REMAINING KNOWN ISSUES (not addressed here)
+-------------------------------------------
+- Workers with coverage < min_coverage are excluded from the tier KMeans but
+  still contribute rows to Atilde, where their high-variance agreement estimates
+  tilt the leading eigenvectors. A cleaner design builds Atilde on the covered
+  workers only and scores the rest by projection onto U_g.
+- Entries of `agreement` have coverage-dependent variance; all are weighted
+  equally in the eigendecomposition.
+- tier_spectral = 0 conflates "low coverage / no information" with "LQ / no
+  signal". Use the returned `tested_mask` to distinguish them downstream.
+"""
+
+import warnings
+
+import numpy as np
+from scipy.stats import mode
+from sklearn.cluster import KMeans, AgglomerativeClustering
+from sklearn.metrics import silhouette_score
+from sklearn.mixture import GaussianMixture
+import matplotlib.pyplot as plt
+
+LQ, HQ, BIASED = 0, 1, 2
+
+
+def _safe_mode_int(x, default=-1):
+    """Return the integer mode of a 1D array after dropping NaN values."""
+    x = np.asarray(x)
+    x = x[~np.isnan(x)]
+    if x.size == 0:
+        return default
+    return int(mode(x, axis=None, keepdims=False).mode)
+
+
+def _pairwise_agreement(R_g, n_worker, n_categories, fill):
+    """
+    Worker-worker agreement-rate matrix.
+
+    agreement[j, l] = fraction of commonly-labelled tasks on which workers j and
+    l gave the same label. Pairs with no overlap are imputed at `fill`, the
+    chance-agreement level, so that Atilde = agreement - fill is 0 for them
+    (i.e. "no information", not "no agreement").
+
+    Self-agreement is 1 by definition; it is overwritten downstream when the
+    matrix is hollowed.
+
+    Vectorised: C matrix products of shape (T, n) instead of an O(n^2 T) loop.
+    """
+    obs = ~np.isnan(R_g)                                   # (T, n)
+    overlap = obs.astype(float).T @ obs.astype(float)      # (n, n)
+
+    match = np.zeros((n_worker, n_worker), dtype=float)
+    for c in range(n_categories):
+        Xc = (R_g == c).astype(float)                      # NaN == c -> False
+        match += Xc.T @ Xc
+
+    with np.errstate(invalid="ignore", divide="ignore"):
+        agreement = np.where(overlap > 0, match / np.maximum(overlap, 1.0), fill)
+
+    np.fill_diagonal(agreement, 1.0)
+    coverage = obs.sum(axis=0).astype(int)
+    return agreement, coverage, overlap
+
+
+def _within_cluster_agreement(agreement, idx):
+    """Mean off-diagonal raw agreement among the workers in `idx`."""
+    if idx.size < 2:
+        return np.nan
+    sub = agreement[np.ix_(idx, idx)]
+    off = ~np.eye(idx.size, dtype=bool)
+    return float(sub[off].mean())
+
+def _two_stage_tiering(X, stage2="agg", eps=1e-9, n_init=20, random_state=0):
+    """
+    Stage 1: Agglomerative clustering on spectral norm -> LQ vs structured.
+    Stage 2: Agglomerative or KMeans on structured workers -> HQ vs biased.
+
+    Tier encoding: 0=LQ, 1=HQ, 2=biased.
+    """
+    X = np.asarray(X, dtype=float)
+    n = X.shape[0]
+    tier = np.full(n, LQ, dtype=int)
+
+    info = {
+        "stage1_labels": None,
+        "stage1_mean_norms": None,
+        "structured_idx": np.array([], dtype=int),
+        "stage2_labels": None,
+        "stage2_centers": None,
+        "stage2_center_norms": None,
+    }
+
+    if n < 3:
+        return tier, info
+
+    # ------------------------------------------------------------
+    # Stage 1: LQ vs structured using spectral norm
+    # ------------------------------------------------------------
+    norms = np.linalg.norm(X, axis=1)
+
+    if np.unique(np.round(norms / eps)).size < 2:
+        return tier, info
+
+    agg1 = AgglomerativeClustering(n_clusters=2, linkage="average")
+    stage1_labels = agg1.fit_predict(norms[:, None])
+
+    mean_norms = np.array([norms[stage1_labels == c].mean() for c in range(2)])
+    structured_cluster = np.argmax(mean_norms)
+    structured_idx = np.where(stage1_labels == structured_cluster)[0]
+
+    info["stage1_labels"] = stage1_labels
+    info["stage1_mean_norms"] = mean_norms
+    info["structured_idx"] = structured_idx
+
+    if structured_idx.size < 2:
+        return tier, info
+
+    # ------------------------------------------------------------
+    # Stage 2: HQ vs biased
+    # ------------------------------------------------------------
+    X_struct = X[structured_idx]
+
+    if np.unique(np.round(X_struct / eps), axis=0).shape[0] < 2:
+        tier[structured_idx] = HQ
+        return tier, info
+
+    if stage2 == "agg":
+        model = AgglomerativeClustering(n_clusters=2, linkage="average")
+        stage2_labels = model.fit_predict(X_struct)
+
+        centers = np.vstack([
+            X_struct[stage2_labels == c].mean(axis=0) for c in range(2)
+        ])
+
+    elif stage2 == "kmeans":
+        model = KMeans(n_clusters=2, n_init=n_init, random_state=random_state).fit(X_struct)
+        stage2_labels = model.labels_
+        centers = model.cluster_centers_
+
+    else:
+        raise ValueError("stage2 must be 'agg' or 'kmeans'.")
+        
+
+    center_norms = np.linalg.norm(centers, axis=1)
+
+    # Larger spectral signal = HQ
+    hq_cluster = np.argmax(center_norms)
+    biased_cluster = np.argmin(center_norms)
+
+    tier[structured_idx[stage2_labels == hq_cluster]] = HQ
+    tier[structured_idx[stage2_labels == biased_cluster]] = BIASED
+
+    info["stage2_labels"] = stage2_labels
+    info["stage2_centers"] = centers
+    info["stage2_center_norms"] = center_norms
+
+    return tier, info
+
+
+def spectral_norm_adaptive_cutoffs(
+    scores, eps=1e-12, largest_gap_max_frac=0.10,
+    largest_gap_min_k=2, geometric_elbow_max_frac=0.10,
+):
+    """Two unsupervised HQ-count estimates from descending spectral norms.
+
+    largest_gap: largest adjacent drop s_(k) - s_(k+1) for cutoff ranks
+        2..floor(largest_gap_max_frac * n), default top 10%.
+    geometric_elbow: largest absolute deviation from the normalized endpoint
+        chord, restricted to cutoff ranks 2..floor(geometric_elbow_max_frac*n),
+        also top 10% by default. The chord still uses the FULL score curve.
+
+    Returns counts (not worker indices). A constant/zero-signal profile returns
+    0. For n < 20 at the default 10% cap, geometric elbow has no eligible
+    interior cutoff and returns 0 rather than violating the cap.
+    """
+    if not (0 < largest_gap_max_frac <= 1):
+        raise ValueError("largest_gap_max_frac must be in (0, 1].")
+    if not (0 < geometric_elbow_max_frac <= 1):
+        raise ValueError("geometric_elbow_max_frac must be in (0, 1].")
+    if largest_gap_min_k < 1:
+        raise ValueError("largest_gap_min_k must be >= 1.")
+    scores = np.asarray(scores, dtype=float).ravel()
+    if not np.all(np.isfinite(scores)):
+        raise ValueError("Spectral norm scores must be finite.")
+    order = np.argsort(-scores, kind="stable")
+    sorted_scores = scores[order]
+    n = scores.size
+    result = {"order": order, "sorted_scores": sorted_scores,
+              "largest_gap_k": 0, "geometric_elbow_k": 0,
+              "largest_gap_size": 0.0, "geometric_distance": np.zeros(n)}
+    if n < 2 or sorted_scores[0] - sorted_scores[-1] <= eps:
+        return result
+
+    gaps = sorted_scores[:-1] - sorted_scores[1:]
+    # Search only in the high-score region: for 400 workers, ranks 2..40.
+    # This excludes drops near the low-score tail (e.g., the 399th gap).
+    max_k = min(n - 1, max(1, int(np.floor(largest_gap_max_frac * n))))
+    min_k = min(max_k, int(largest_gap_min_k))
+    candidates = np.arange(min_k, max_k + 1)
+    k_gap = int(candidates[np.argmax(gaps[candidates - 1])])
+    if gaps[k_gap - 1] > eps:
+        result["largest_gap_k"] = k_gap
+        result["largest_gap_size"] = float(gaps[k_gap - 1])
+
+    if n >= 3:
+        # Rank and score range are both normalized to [0,1].
+        x = np.linspace(0.0, 1.0, n)
+        y = (sorted_scores - sorted_scores[-1]) / (sorted_scores[0] - sorted_scores[-1])
+        # Perpendicular distance to the chord from (0,1) to (1,0),
+        # up to an irrelevant factor 1/sqrt(2).
+        distance = np.abs(y - (1.0 - x))
+        result["geometric_distance"] = distance
+        # Evaluate only cutoff counts within the top fraction of workers.
+        # For n=400 and 10%, candidates are k=2,...,40 (never 100+).
+        max_k_elbow = min(n - 1, int(np.floor(geometric_elbow_max_frac * n)))
+        if max_k_elbow >= 2:
+            candidate_k = np.arange(2, max_k_elbow + 1)
+            # A cutoff after k workers is drawn at the k-th ranked point,
+            # which is zero-based index k-1 in the distance array.
+            candidate_distance = distance[candidate_k - 1]
+            if candidate_distance.max() > eps:
+                result["geometric_elbow_k"] = int(candidate_k[np.argmax(candidate_distance)])
+    return result
+
+
+def spectral_worker_features_one_group(
+    R_g,
+    n_worker=None,
+    n_categories=None,
+    hq_ratio=None,
+    K=None,
+    min_coverage=0,
+    eps=1e-9,
+    n_init=10,
+    random_state=0,
+    return_matrices=False,
+    check_tier_order=True,
+    verbose = 0
+):
+    """
+    Extract spectral worker features for ONE predicted task group.
+
+    Parameters
+    ----------
+    R_g : array, shape (n_tasks_in_group, n_worker)
+        Observed labels, integers 0..C-1, with np.nan for missing.
+    n_worker, n_categories : int, optional
+        Inferred from R_g if omitted. Pass n_categories explicitly when calling
+        per-group, so that the centering constant 1/C is the same across groups.
+    K : int, optional
+        Number of leading spectral directions. Defaults to min(2, C - 1) and is
+        clamped to that value if a larger K is passed.
+    min_coverage : int
+        Workers with fewer observed labels in this group are excluded from the
+        tier KMeans and reported as tier 0 with tested_mask False.
+    check_tier_order : bool
+        Cross-check the norm-ordering of the KMeans centers against within-cluster
+        raw agreement. Both encode Assumption 3 (a > b) but read it off different
+        quantities; disagreement is a red flag and raises a warning.
+
+    Returns
+    -------
+    dict with keys:
+        spectral_embedding : (n_worker, K_eff)   x^S_{jg} = Lambda^{1/2} V[j, :]
+        tier_spectral      : (n_worker,) int     0=LQ/background, 1=HQ, 2=biased
+        hq_idx, biased_idx, lq_idx, tested_idx, tested_mask
+        eigvals, eigvecs, positive_eig_mask, cluster_centers, coverage
+        qhat, p0, center_const, within_agreement, tier_order_ok
+    """
+    R_g = np.asarray(R_g, dtype=float)
+    if R_g.ndim != 2:
+        raise ValueError("R_g must be a 2D array: tasks in group x workers.")
+
+    if n_worker is None:
+        n_worker = R_g.shape[1]
+    if n_worker != R_g.shape[1]:
+        raise ValueError("n_worker does not match R_g.shape[1].")
+
+    if n_categories is None:
+        if np.all(np.isnan(R_g)):
+            raise ValueError("Cannot infer n_categories: R_g has no observed labels.")
+        n_categories = int(np.nanmax(R_g)) + 1
+        warnings.warn(
+            "n_categories inferred from this group only; pass it explicitly so "
+            "the centering constant 1/C is shared across groups.",
+            RuntimeWarning,
+        )
+    if n_categories < 2:
+        raise ValueError("n_categories must be at least 2.")
+
+    # (ii) rank of the population signal matrix is (C - 1) capped at 2.
+    K_max = min(2, n_categories - 1, n_worker)
+    if K is None:
+        K = K_max
+    elif K > K_max:
+        warnings.warn(
+            f"K={K} exceeds the population signal rank min(2, C-1)={K_max}; "
+            f"clamping to {K_max}. The extra directions would be pure noise.",
+            RuntimeWarning,
+        )
+        K = K_max
+    K_eff = int(max(K, 1))
+
+    # ------------------------------------------------------------------
+    # 1. Agreement matrix and (i) the correct centering constant.
+    # ------------------------------------------------------------------
+    center_const = 1.0 / n_categories
+
+    agreement, coverage, overlap = _pairwise_agreement(
+        R_g, n_worker, n_categories, fill=center_const
+    )
+
+    # Pooled marginal and p0 are retained as diagnostics only. They are NOT the
+    # centering constant: p0 >= 1/C, and the excess injects a rank-one 11^T term.
+    pooled_counts = np.zeros(n_categories, dtype=float)
+    for c in range(n_categories):
+        pooled_counts[c] = np.count_nonzero(R_g == c)
+    qhat = (
+        pooled_counts / pooled_counts.sum()
+        if pooled_counts.sum() > 0
+        else np.full(n_categories, center_const)
+    )
+    p0 = float(np.sum(qhat ** 2))
+
+    Atilde = agreement - center_const
+    np.fill_diagonal(Atilde, 0.0)
+
+    # ------------------------------------------------------------------
+    # 2. Eigendecomposition and spectral embedding.
+    # ------------------------------------------------------------------
+    eigvals_all, eigvecs_all = np.linalg.eigh(Atilde)
+    order = np.argsort(eigvals_all)[::-1]
+    eigvals_all = eigvals_all[order]
+    eigvecs_all = eigvecs_all[:, order]
+
+    lam_raw = eigvals_all[:K_eff].copy()
+    V_raw = eigvecs_all[:, :K_eff].copy()
+
+    pos_mask = lam_raw > eps
+    lam_pos = np.where(pos_mask, lam_raw, 0.0)
+
+    spectral_embedding = V_raw * np.sqrt(lam_pos)[None, :]
+
+    # Worker tiering:
+    # KMeans on spectral norms ||x_j||.
+    # Smaller-norm cluster -> LQ
+    # Larger-norm cluster  -> HQ
+    
+    tested_mask = coverage >= min_coverage
+    tested = np.where(tested_mask)[0]
+
+    # Adaptive spectral cutoffs: compute both on the SAME embedding used by
+    # fixed-gamma LiSER. They do not use hq_ratio, true labels, or true tiers.
+    spectral_norm_score = np.full(n_worker, np.nan, dtype=float)
+    tier_largest_gap = np.full(n_worker, LQ, dtype=int)
+    tier_geometric_elbow = np.full(n_worker, LQ, dtype=int)
+    cutoff_info = spectral_norm_adaptive_cutoffs(np.array([]))
+    if tested.size:
+        spectral_norm_score[tested] = np.linalg.norm(spectral_embedding[tested], axis=1)
+        cutoff_info = spectral_norm_adaptive_cutoffs(spectral_norm_score[tested], eps=eps)
+        ranked_workers = tested[cutoff_info["order"]]
+        tier_largest_gap[ranked_workers[:cutoff_info["largest_gap_k"]]] = HQ
+        tier_geometric_elbow[ranked_workers[:cutoff_info["geometric_elbow_k"]]] = HQ
+
+    k_hat_largest_gap = cutoff_info["largest_gap_k"]
+    k_hat_geometric_elbow = cutoff_info["geometric_elbow_k"]
+    gamma_hat_largest_gap = k_hat_largest_gap / tested.size if tested.size else np.nan
+    gamma_hat_geometric_elbow = k_hat_geometric_elbow / tested.size if tested.size else np.nan
+
+    tier_mean_agreement = np.full(n_worker, LQ, dtype=int)
+    mean_agreement_score = np.full(n_worker, np.nan, dtype=float)
+
+    if tested.size > 0:
+        n_hq_simple = max(1, min(len(tested),int(round(hq_ratio * len(tested)))))
+        if tested.size == 1:
+            mean_agreement_score[tested[0]] = 0.0
+        else:
+            A_tested = Atilde[np.ix_(tested, tested)]
+
+            mean_agreement_score[tested] = (
+                A_tested.sum(axis=1) / (tested.size - 1)
+            )
+
+        simple_order = np.argsort(mean_agreement_score[tested])
+
+        simple_hq_local = simple_order[-n_hq_simple:]
+        simple_lq_local = simple_order[:-n_hq_simple]
+
+        tier_mean_agreement[tested[simple_lq_local]] = LQ
+        tier_mean_agreement[tested[simple_hq_local]] = HQ
+        
+    # ================================================================
+    # Storage
+    # ================================================================
+    
+    tier_kmeans = np.full(n_worker, LQ, dtype=int)
+    tier_agg = np.full(n_worker, LQ, dtype=int)
+    tier_hybrid = np.full(n_worker, LQ, dtype=int)
+    tier_ratio = np.full(n_worker, LQ, dtype=int)
+    
+    kmeans_centers = None
+    agg_centers = None
+    
+    
+    if (
+        tested.size >= 3
+        and np.linalg.norm(
+            spectral_embedding[tested]
+        ) > eps
+    ):
+    
+        X = spectral_embedding[tested, :]
+        X_norm = np.linalg.norm(X, axis=1).reshape(-1, 1)
+        if verbose:
+            spectral_two_cluster_check(X_norm)
+
+        km = KMeans(n_clusters=2, n_init=n_init, random_state=random_state).fit(X_norm)
+
+        kmeans_centers = km.cluster_centers_.copy()
+        center_norms = km.cluster_centers_.ravel()
+
+        lq_cluster = np.argmin(center_norms)
+        hq_cluster = np.argmax(center_norms)
+
+        tier_kmeans[tested[km.labels_ == lq_cluster]] = LQ
+        tier_kmeans[tested[km.labels_ == hq_cluster]] = HQ
+
+        # ------------------------------------------------------------
+        # 2-cluster Agglomerative: LQ vs HQ on spectral norm
+        # ------------------------------------------------------------
+        agg = AgglomerativeClustering(n_clusters=2, linkage="average")
+        agg_labels = agg.fit_predict(X_norm)
+
+        agg_centers = np.array([
+            X_norm[agg_labels == c].mean()
+            for c in range(2)
+        ])
+
+        lq_cluster_agg = np.argmin(agg_centers)
+        hq_cluster_agg = np.argmax(agg_centers)
+
+        tier_agg[tested[agg_labels == lq_cluster_agg]] = LQ
+        tier_agg[tested[agg_labels == hq_cluster_agg]] = HQ
+
+        # ------------------------------------------------------------
+        # Ratio-based split: top hq_ratio spectral norms -> HQ
+        # ------------------------------------------------------------
+
+        n_hq = max(1, int(round(hq_ratio * len(tested))))
+
+        order = np.argsort(X_norm.ravel())
+
+        hq_local = order[-n_hq:]
+        lq_local = order[:-n_hq]
+
+        tier_ratio[tested[lq_local]] = LQ
+        tier_ratio[tested[hq_local]] = HQ
+    #---------------------------------
+    # Backward compatibility:
+    # existing spectral pipeline continues using KMeans by default.
+    # ---------------------------------------------------------------
+    
+    tier_spectral = tier_ratio.copy()
+    
+    hq_idx = np.where(tier_spectral == HQ)[0]
+    biased_idx = np.where(tier_spectral == BIASED)[0]
+    lq_idx = np.where(tier_spectral == LQ)[0]
+    cluster_centers = (kmeans_centers)
+ 
+    out = {
+        "spectral_embedding": spectral_embedding,
+        "tier_spectral": tier_spectral,
+    
+        # New side-by-side results
+        "tier_kmeans": tier_kmeans,
+        "tier_agg": tier_agg,
+        "tier_ratio": tier_ratio,
+        "tier_mean_agreement": tier_mean_agreement,
+        "mean_agreement_score": mean_agreement_score,
+        "tier_largest_gap": tier_largest_gap,
+        "tier_geometric_elbow": tier_geometric_elbow,
+        "spectral_norm_score": spectral_norm_score,
+        "k_hat_largest_gap": k_hat_largest_gap,
+        "k_hat_geometric_elbow": k_hat_geometric_elbow,
+        "gamma_hat_largest_gap": gamma_hat_largest_gap,
+        "gamma_hat_geometric_elbow": gamma_hat_geometric_elbow,
+        "sorted_spectral_norms": cutoff_info["sorted_scores"],
+        "largest_gap_size": cutoff_info["largest_gap_size"],
+        "geometric_distance": cutoff_info["geometric_distance"],
+        "hq_idx_largest_gap": np.flatnonzero(tier_largest_gap == HQ),
+        "hq_idx_geometric_elbow": np.flatnonzero(tier_geometric_elbow == HQ),
+        "kmeans_centers": kmeans_centers,
+        "agg_centers": agg_centers,
+    
+        "hq_idx": hq_idx,
+        "biased_idx": biased_idx,
+        "lq_idx": lq_idx,
+        "hq_idx_mean_agreement": np.where(tier_mean_agreement == HQ)[0],
+    
+        "tested_idx": tested,
+        "tested_mask": tested_mask,
+    
+        "eigvals": lam_raw,
+        "eigvecs": V_raw,
+        "eigvals_all": eigvals_all,
+        "positive_eig_mask": pos_mask,
+        "cluster_centers": cluster_centers,
+        "coverage": coverage,
+        "qhat": qhat,
+        "p0": p0,
+        "center_const": center_const,
+        "K_eff": K_eff,
+    }
+
+    if return_matrices:
+        out["agreement"] = agreement
+        out["Atilde"] = Atilde
+        out["overlap"] = overlap
+    return out
+
+
+def extract_spectral_worker_features(
+    pred_group,
+    R_obs,
+    n_task_groups,
+    n_worker=None,
+    n_categories=None,
+    hq_ratio=None,
+    K=None,
+    min_coverage=0,
+    n_init=10,
+    random_state=0,
+    return_matrices=False,
+):
+    """
+    Extract spectral worker features for all predicted task groups.
+
+    Returns
+    -------
+    dict with
+        embedding     : (n_worker, n_task_groups, K_max)
+        coverage      : (n_worker, n_task_groups)
+        tested_mask   : (n_worker, n_task_groups) bool
+        tier_spectral : (n_worker, n_task_groups)   0=LQ, 1=HQ, 2=biased
+    """
+    R_obs = np.asarray(R_obs, dtype=float)
+    pred_group = np.asarray(pred_group)
+
+    if n_worker is None:
+        n_worker = R_obs.shape[1]
+    if n_categories is None:
+        n_categories = int(np.nanmax(R_obs)) + 1
+
+    K_max = min(2, n_categories - 1, n_worker)
+    if K is None:
+        K = K_max
+
+    embedding = np.full((n_worker, n_task_groups, K_max), np.nan)
+    coverage = np.zeros((n_worker, n_task_groups), dtype=int)
+    tested_mask = np.zeros((n_worker, n_task_groups), dtype=bool)
+    tier_spectral = np.zeros((n_worker, n_task_groups), dtype=int)
+    tier_kmeans = np.zeros((n_worker, n_task_groups),dtype=int,)
+    tier_hybrid = np.zeros((n_worker, n_task_groups), dtype=int)   
+    tier_agg = np.zeros((n_worker, n_task_groups), dtype=int,)
+    tier_ratio = np.zeros((n_worker, n_task_groups), dtype=int,)
+    tier_mean_agreement = np.zeros((n_worker, n_task_groups), dtype=int)
+    mean_agreement_score = np.full((n_worker, n_task_groups), np.nan, dtype=float)
+    tier_largest_gap = np.zeros((n_worker, n_task_groups), dtype=int)
+    tier_geometric_elbow = np.zeros((n_worker, n_task_groups), dtype=int)
+    spectral_norm_score = np.full((n_worker, n_task_groups), np.nan)
+    k_hat_largest_gap = np.zeros(n_task_groups, dtype=int)
+    k_hat_geometric_elbow = np.zeros(n_task_groups, dtype=int)
+    gamma_hat_largest_gap = np.full(n_task_groups, np.nan)
+    gamma_hat_geometric_elbow = np.full(n_task_groups, np.nan)
+
+    group_outputs = []
+    global_lq_mask = np.zeros(n_worker, dtype=bool)
+    warm_worker_mask = np.ones(n_worker, dtype=bool)
+    for g in range(n_task_groups):
+        tasks_g = np.where(pred_group == g)[0]
+        if tasks_g.size == 0:
+            group_outputs.append({"tasks": tasks_g, "empty": True})
+            continue
+
+        out_g = spectral_worker_features_one_group(
+            R_obs[tasks_g, :],
+            n_worker=n_worker,
+            n_categories=n_categories,
+            hq_ratio=hq_ratio,
+            K=K,
+            min_coverage=min_coverage,
+            n_init=n_init,
+            random_state=random_state,
+            return_matrices=return_matrices,
+        )
+        out_g["tasks"] = tasks_g
+        out_g["empty"] = False
+        group_outputs.append(out_g)
+
+        k = out_g["spectral_embedding"].shape[1]
+        embedding[:, g, :k] = out_g["spectral_embedding"]
+        coverage[:, g] = out_g["coverage"]
+        tested_mask[:, g] = out_g["tested_mask"]
+        tier_spectral[:, g] = out_g["tier_spectral"]
+        tier_kmeans[:, g] = out_g["tier_kmeans"]
+        tier_agg[:, g] = out_g["tier_agg"]
+        tier_ratio[:, g] = out_g["tier_ratio"]
+        tier_mean_agreement[:, g] = out_g["tier_mean_agreement"]
+        mean_agreement_score[:, g] = out_g["mean_agreement_score"]
+        tier_largest_gap[:, g] = out_g["tier_largest_gap"]
+        tier_geometric_elbow[:, g] = out_g["tier_geometric_elbow"]
+        spectral_norm_score[:, g] = out_g["spectral_norm_score"]
+        k_hat_largest_gap[g] = out_g["k_hat_largest_gap"]
+        k_hat_geometric_elbow[g] = out_g["k_hat_geometric_elbow"]
+        gamma_hat_largest_gap[g] = out_g["gamma_hat_largest_gap"]
+        gamma_hat_geometric_elbow[g] = out_g["gamma_hat_geometric_elbow"]
+        
+        # Workers identified as LQ in every task group.
+        # Require the worker to have actually been tested in every group so that
+        # "not enough information" is not accidentally interpreted as LQ.
+        all_tested = np.all(tested_mask, axis=1)
+        global_lq_mask = all_tested & np.all(tier_spectral == LQ, axis=1)
+        warm_worker_mask = ~global_lq_mask
+
+
+    return {
+        "embedding": embedding,
+        "coverage": coverage,
+        "tested_mask": tested_mask,
+        "tier_spectral": tier_spectral,
+        "tier_kmeans": tier_kmeans,
+        "tier_agg": tier_agg,
+        "tier_hybrid": tier_hybrid,
+        "tier_ratio": tier_ratio,
+        "tier_mean_agreement": tier_mean_agreement,
+        "mean_agreement_score": mean_agreement_score,
+        "tier_largest_gap": tier_largest_gap,
+        "tier_geometric_elbow": tier_geometric_elbow,
+        "spectral_norm_score": spectral_norm_score,
+        "k_hat_largest_gap": k_hat_largest_gap,
+        "k_hat_geometric_elbow": k_hat_geometric_elbow,
+        "gamma_hat_largest_gap": gamma_hat_largest_gap,
+        "gamma_hat_geometric_elbow": gamma_hat_geometric_elbow,
+        "global_lq_mask": global_lq_mask,
+        "warm_worker_mask": warm_worker_mask,
+    
+        "group_outputs": group_outputs,
+        "tier_encoding": {"LQ": LQ, "HQ": HQ, "Biased": BIASED},
+        "K": K_max,
+        "center_const": 1.0 / n_categories,
+    }
+
+
+def add_latent_factor_norm_selection(spectral, B):
+    """Add top-n HQ selection by Stage-1 worker latent-factor norms.
+
+    B: (n_worker, n_task_groups, lf_dim), in the same estimated-group
+       coordinates as spectral["tier_spectral"].
+    The eligible workers and selected HQ count match spectral selection
+    separately in each group. No extra model fit or eigendecomposition.
+    """
+    B = np.asarray(B, dtype=float)
+    eligible = np.asarray(spectral["tested_mask"], dtype=bool)
+    tier_spectral = np.asarray(spectral["tier_spectral"], dtype=int)
+    n_worker, n_groups = eligible.shape
+
+    if B.ndim != 3 or B.shape[:2] != (n_worker, n_groups):
+        raise ValueError(f"B must have shape ({n_worker}, {n_groups}, lf_dim); got {B.shape}.")
+
+    tier_latent_norm = np.full((n_worker, n_groups), LQ, dtype=int)
+    latent_factor_norm_score = np.full((n_worker, n_groups), np.nan, dtype=float)
+
+    for g in range(n_groups):
+        tested = np.flatnonzero(eligible[:, g])
+        if tested.size == 0:
+            continue
+
+        B_g = B[tested, g, :]
+        if not np.all(np.isfinite(B_g)):
+            raise ValueError(f"B contains nonfinite worker factors for task group {g}.")
+
+        score = np.linalg.norm(B_g, axis=1)
+        latent_factor_norm_score[tested, g] = score
+
+        # Exactly the same number of HQ workers as the spectral selection.
+        n_hq = int(np.count_nonzero(tier_spectral[tested, g] == HQ))
+        if n_hq:
+            hq_idx = tested[np.argsort(score, kind="stable")[-n_hq:]]
+            tier_latent_norm[hq_idx, g] = HQ
+
+        # Keep per-group and all-group outputs synchronized.
+        out_g = spectral["group_outputs"][g]
+        out_g["tier_latent_norm"] = tier_latent_norm[:, g].copy()
+        out_g["latent_factor_norm_score"] = latent_factor_norm_score[:, g].copy()
+        out_g["hq_idx_latent_norm"] = np.flatnonzero(tier_latent_norm[:, g] == HQ)
+
+    spectral["tier_latent_norm"] = tier_latent_norm
+    spectral["latent_factor_norm_score"] = latent_factor_norm_score
+    return spectral
+
+
+def infer_labels_from_spectral_hq(
+    pred_group,
+    R_obs,
+    spectral,
+    n_task,
+    n_task_groups,
+    label=None,
+    label_mode="task",
+    worker_selection="spectral",
+):
+    """
+    Majority vote over workers selected within each recovered task group.
+
+    worker_selection='spectral':
+        top hq_ratio workers by spectral embedding norm.
+    worker_selection='mean_agreement':
+        top hq_ratio workers by mean centered agreement.
+    worker_selection='latent_norm':
+        same number of workers by Stage-1 worker-factor norm (requires B).
+    """
+    R_obs = np.asarray(R_obs, dtype=float)
+    pred_group = np.asarray(pred_group)
+    task_label_pred = np.full(n_task, -1, dtype=int)
+    group_label_pred = np.full(n_task_groups, -1, dtype=int)
+
+    hq_workers_pred, biased_workers_pred = [], []
+
+    selection_keys = {
+        "spectral": "tier_spectral",
+        "mean_agreement": "tier_mean_agreement",
+        "simple": "tier_mean_agreement",
+        "latent_norm": "tier_latent_norm",
+        "largest_gap": "tier_largest_gap",
+        "geometric_elbow": "tier_geometric_elbow",
+    }
+    if worker_selection not in selection_keys:
+        raise ValueError("worker_selection must be 'spectral', 'mean_agreement', "
+                         "'latent_norm', 'largest_gap', or 'geometric_elbow'.")
+    tier_key = selection_keys[worker_selection]
+    if tier_key not in spectral:
+        raise ValueError(f"Selection '{worker_selection}' is unavailable in spectral results "
+                         "(latent_norm requires B=... in _hq_and_label_infer()).")
+
+    for g in range(n_task_groups):
+        tier_g = spectral[tier_key][:, g]
+        hq_g = np.where(tier_g == HQ)[0]
+        biased_g = np.where(tier_g == BIASED)[0]
+        hq_workers_pred.append(hq_g)
+        biased_workers_pred.append(biased_g)
+
+        tasks_g = np.where(pred_group == g)[0]
+        if tasks_g.size == 0 or hq_g.size == 0:
+            continue
+
+        if label_mode == "group":
+            group_label_pred[g] = _safe_mode_int(R_obs[np.ix_(tasks_g, hq_g)].ravel())
+            if group_label_pred[g] != -1:
+                task_label_pred[tasks_g] = group_label_pred[g]
+        elif label_mode == "task":
+            for i in tasks_g:
+                task_label_pred[i] = _safe_mode_int(R_obs[i, hq_g])
+        else:
+            raise ValueError("label_mode must be 'task' or 'group'.")
+
+    task_accuracy = None
+    if label is not None:
+        task_accuracy = float(np.mean(task_label_pred == np.asarray(label)))
+    return task_accuracy, task_label_pred, hq_workers_pred, biased_workers_pred
+
+
+
+def compare_worker_selection_methods(
+    pred_group,
+    R_obs,
+    spectral,
+    n_task,
+    n_task_groups,
+    label=None,
+    label_mode="task",
+):
+    """
+    Compare available worker selection schemes on the same task groups,
+    eligible worker set, HQ count, and final majority-vote rule.
+    """
+    results = {}
+    methods = ["spectral", "mean_agreement", "largest_gap", "geometric_elbow"]
+    if "tier_latent_norm" in spectral:
+        methods.append("latent_norm")
+    for method in methods:
+        acc, pred, hq_workers, biased_workers = infer_labels_from_spectral_hq(
+            pred_group=pred_group,
+            R_obs=R_obs,
+            spectral=spectral,
+            n_task=n_task,
+            n_task_groups=n_task_groups,
+            label=label,
+            label_mode=label_mode,
+            worker_selection=method,
+        )
+        results[method] = {
+            "task_accuracy": acc,
+            "task_label_pred": pred,
+            "hq_workers_pred": hq_workers,
+            "biased_workers_pred": biased_workers,
+        }
+    return results
+
+def _hq_and_label_infer(
+    pred_group,
+    R_obs,
+    label,
+    worker_label,
+    n_task,
+    n_worker,
+    n_task_groups,
+    hq_ratio,
+    LABEL_MODE="task",
+    WORKER_SELECTION="spectral",
+    verbose=False,
+    MIN_COVERAGE=0,
+    return_spectral=True,
+    B=None,
+    **legacy_kwargs,
+):
+    """
+    Backward-compatible wrapper with a worker-selection toggle.
+
+    WORKER_SELECTION='spectral' uses the LiSER spectral refinement.
+    WORKER_SELECTION='mean_agreement' uses the simple agreement baseline.
+    WORKER_SELECTION='latent_norm' ranks Stage-1 B factors; requires B=... .
+    """
+    if "TIER_METHOD" in legacy_kwargs:
+        warnings.warn(
+            "TIER_METHOD is deprecated and ignored; tiering is a 3-center KMeans "
+            "on the spectral embedding.",
+            DeprecationWarning,
+        )
+    unknown = set(legacy_kwargs) - {"TIER_METHOD"}
+    if unknown:
+        raise TypeError(f"unexpected keyword arguments: {sorted(unknown)}")
+
+    spectral = extract_spectral_worker_features(
+        pred_group=pred_group,
+        R_obs=R_obs,
+        n_task_groups=n_task_groups,
+        n_worker=n_worker,
+        n_categories=int(np.nanmax(R_obs)) + 1,
+        hq_ratio=hq_ratio,
+        K=None,
+        min_coverage=MIN_COVERAGE,
+    )
+    if B is not None:
+        add_latent_factor_norm_selection(spectral, B)
+    elif WORKER_SELECTION == "latent_norm":
+        raise ValueError("WORKER_SELECTION='latent_norm' requires the Stage-1 worker factors B=... .")
+
+    task_accuracy, task_label_pred, hq_workers_pred, biased_workers_pred = (
+        infer_labels_from_spectral_hq(
+            pred_group=pred_group,
+            R_obs=R_obs,
+            spectral=spectral,
+            n_task=n_task,
+            n_task_groups=n_task_groups,
+            label=label,
+            label_mode=LABEL_MODE,
+            worker_selection=WORKER_SELECTION,
+        )
+    )
+
+    
+    if verbose:
+        print("embedding shape:", spectral["embedding"].shape, " K =", spectral["K"])
+        print("centering constant 1/C =", spectral["center_const"])
+        print("worker selection =", WORKER_SELECTION)
+
+    if return_spectral:
+        return task_accuracy, task_label_pred, hq_workers_pred, biased_workers_pred, spectral
+    return task_accuracy, task_label_pred, hq_workers_pred, biased_workers_pred
+
+def plot_spectral_cutoffs(spectral, save_dir=None, run=None, show=False):
+    """Plot per-group sorted spectral norms and estimated HQ-count cutoffs.
+
+    No ground-truth information is used. Returns the list of saved paths.
+    """
+    from pathlib import Path
+    saved = []
+    for g, out_g in enumerate(spectral["group_outputs"]):
+        if out_g.get("empty"):
+            continue
+        scores = out_g["sorted_spectral_norms"]
+        if scores.size == 0:
+            continue
+        fig, ax = plt.subplots(figsize=(7.2, 4.4))
+        ax.plot(np.arange(1, scores.size + 1), scores, lw=1.8, color="tab:blue")
+        for method, color, label in (
+            ("k_hat_largest_gap", "tab:red", "Largest gap"),
+            ("k_hat_geometric_elbow", "tab:green", "Geometric elbow"),
+        ):
+            k = out_g[method]
+            if k > 0:
+                ax.axvline(k + 0.5, ls="--", color=color, lw=1.5, label=f"{label}: k={k}")
+        ax.set(xlabel="Worker rank (descending spectral norm)", ylabel="Spectral norm",
+               title=f"Spectral HQ cutoff | group {g}" + (f" | run {run}" if run is not None else ""))
+        ax.legend(loc="best")
+        fig.tight_layout()
+        if save_dir is not None:
+            dest = Path(save_dir)
+            dest.mkdir(parents=True, exist_ok=True)
+            out_path = dest / f"spectral_cutoffs_run{run}_group{g}.png"
+            fig.savefig(out_path, dpi=170)
+            saved.append(str(out_path))
+        if show:
+            plt.show()
+        plt.close(fig)
+    return saved
+
+
+def spectral_tier_centers(spectral):
+    """Per-group tier centers in the SPECTRAL EMBEDDING space, (3, K, n_groups).
+
+    Diagnostics only. This is the eigenbasis of the agreement matrix, NOT the
+    LFGP latent-factor space -- do not pass this to _mc_fit.
+    Rows follow the LQ/HQ/BIASED convention; NaN where a tier was empty.
+    """
+    outs = spectral["group_outputs"]
+    K = spectral["K"]
+    centers = np.full((3, K, len(outs)), np.nan)
+    for g, out_g in enumerate(outs):
+        if out_g.get("empty") or out_g.get("cluster_centers") is None:
+            continue
+        emb, tier = out_g["spectral_embedding"], out_g["tier_spectral"]
+        for t in (LQ, HQ, BIASED):
+            m = tier == t
+            if m.any():
+                centers[t, :, g] = emb[m, :].mean(axis=0)
+    return centers
+
+
+def tier_centers_in_lf_space(B, tier, bias_scheme="free2", verbose=False):
+    """Tier centroids in the LFGP latent-factor space, shape (3, lf_dim, n_groups)
+    -- the layout _mc_fit expects for `clusters`.
+
+    B    : (n_worker, n_task_group, lf_dim)  worker latent factors
+    tier : (n_worker, n_task_group)          0=LQ, 1=HQ, 2=biased
+    """
+    B = np.asarray(B, dtype=float)
+    tier = np.asarray(tier, dtype=int)
+    n_worker, n_groups, lf_dim = B.shape
+    if tier.shape != (n_worker, n_groups):
+        raise ValueError(f"tier has shape {tier.shape}; expected {(n_worker, n_groups)}.")
+
+    clusters = np.zeros((3, lf_dim, n_groups))
+    for g in range(n_groups):
+        for t in (LQ, HQ, BIASED):
+            if t == LQ and bias_scheme == "free2":
+                continue                      # LQ pinned at the origin
+            m = tier[:, g] == t
+            if m.any():
+                clusters[t, :, g] = B[m, g, :].mean(axis=0)
+            elif verbose:
+                warnings.warn(f"group {g}: tier {t} empty; center left at origin "
+                              "(the degenerate-seed check will fall back).",
+                              RuntimeWarning)
+    return clusters
+
+def spectral_two_cluster_check(score):
+    x = np.asarray(score).reshape(-1, 1)
+
+    km = KMeans(n_clusters=2, n_init=20, random_state=0).fit(x)
+    labels = km.labels_
+
+    sil = silhouette_score(x, labels)
+
+    vals0 = x[labels == 0].ravel()
+    vals1 = x[labels == 1].ravel()
+
+    m0, m1 = vals0.mean(), vals1.mean()
+    s0, s1 = vals0.std(), vals1.std()
+
+    D = abs(m0 - m1) / np.sqrt((s0**2 + s1**2) / 2)
+
+    print(f"Silhouette = {sil:.3f}")
+    print(f"Ashman's D = {D:.3f}")
+    print(f"Cluster means = {m0:.3f}, {m1:.3f}")
+    print(f"Cluster sizes = {len(vals0)}, {len(vals1)}")
+
+
+

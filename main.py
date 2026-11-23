@@ -43,7 +43,7 @@ from src.CBCC import cbcc
 from src.CF import get_CF
 from src.NetEaseCrowd import get_NETEASE
 from src.getdata_biased import getdata_biased
-from src.eigenInfer import _hq_and_label_infer, tier_centers_in_lf_space
+from src.Spectral_with_mean_agreement import _hq_and_label_infer, tier_centers_in_lf_space, infer_labels_from_spectral_hq, plot_spectral_cutoffs
 from src.Diagnosis import (
     diagnose, 
     summarize_runs,
@@ -81,23 +81,26 @@ LQ_RATIO =2
 
 DRAW_SPECTRAL = 0
 DRAW_HQ_VOTES = 0
+DRAW_ADAPTIVE_CUTOFFS = True  # save sorted spectral-score cutoff plots for first run
 REMOVE_GLOBAL_LQ = False
-SAVE_RESULTS = True  # False: no results/run_<timestamp>/ folder, nothing written to disk
+SAVE_RESULTS = True # False: no results/run_<timestamp>/ folder, nothing written to disk
 
 
 ENABLE = {
     "Eigen_L2":   1,   # LFGP fit + spectral worker tiering
     "Likelihood": 1,   # same LFGP fit, labels via _mc_infer_by_task (no spectral step)
-    "Likelihood2":  0,   # warm-restarted likelihood, init from spectral tiers
-    "Eigen_L2_v2":  0,
+    "Mean_Agreement": 1,   # same Stage 1 + simple mean-agreement HQ selection
+    "Latent_Norm": 1,      # same Stage 1 + top worker-factor norm selection
+    "Spectral_Gap": 1,     # adaptive HQ count: largest spectral-score gap
+    "Spectral_Elbow": 1,   # adaptive HQ count: geometric elbow
     "Eigen_Oracle": 0,   # spectral tiering + label infer on the TRUE task grouping
-    "DS":       0,
+    "DS":       1,
     "MV_HQ":    0,
     "MV":       0,
     "GLAD":     0,
     "GTIC":     0,
     "LFGP":     0,
-    "CBCC":     0,
+    "CBCC":     1,
 }
 
 METHODS = [m for m, on in ENABLE.items() if on]
@@ -106,7 +109,7 @@ FIT_SEEDS = {"ours": 10000,"GLAD": 20000,"MultiSPA": 30000,"GTIC": 40000,"LFGP":
 DATA_KW = dict(                       # getdata_biased arguments, kept in one place
     n_task=N_TASK, n_worker=N_WORKER, n_task_groups=N_TASK_GROUPS,
     k=3, sigma=1, obs_prob=1, hq_ratio=1/30, bias_ratio=0,
-    delta=1, n_classes=N_TASK_GROUPS,rho = 0, random = False, draw_latent_heatmap = False
+    delta=1, n_classes=N_TASK_GROUPS,rho = 0.5, random = False, draw_latent_heatmap = False
 )
 
 # --------------------------------------------------------------------------- #
@@ -279,10 +282,11 @@ def spectral_to_V(hq_workers_pred, biased_workers_pred, n_worker, n_groups):
 
 start = time.perf_counter()
 removed_worker_records = []
+adaptive_gamma_records = []
 
 # per-method worker-tier vectors:  tier_lists[method]["true"/"pred"] -> list over runs
 tier_lists = {name: {"true": [], "pred": []}
-              for name in ("Eigen_L2", "Likelihood", "Likelihood2", "Eigen_L2_v2", "Eigen_Oracle",)}
+              for name in ("Eigen_L2", "Mean_Agreement", "Latent_Norm", "Spectral_Gap", "Spectral_Elbow", "Likelihood", "Eigen_Oracle")}
 if DATASET != "synthetic":
     loader = {"dog": get_DOG, "face": get_FACE, "bird": get_BIRD, "netease": get_NETEASE, "web": get_WEB, "cf": get_CF,}[DATASET]
     rating, y_true, task_group, R_obs, N_TASK, N_WORKER, N_TASK_GROUPS = loader(r=LQ_RATIO, seed = 999)
@@ -299,13 +303,13 @@ for i in range(N_RUNS):
 
     # LFGP model is needed by Eigen_L2, Likelihood, and DS
     model = None
-    if ENABLE["Eigen_L2"] or ENABLE["Likelihood"] or ENABLE["DS"]:
+    if ENABLE["Eigen_L2"] or ENABLE["Mean_Agreement"] or ENABLE["Latent_Norm"] or ENABLE["Spectral_Gap"] or ENABLE["Spectral_Elbow"] or ENABLE["Likelihood"] or ENABLE["DS"]:
         model = LFGP(lf_dim=N_TASK_GROUPS, n_worker_group=N_TASK_GROUPS,
                      lambda1=LAMBDA1, lambda2_0=LAMBDA2_0, lambda2_1=LAMBDA2_1)
         model._prescreen(rating)
 
     # one LFGP fit shared by the likelihood-only and spectral methods
-    if ENABLE["Eigen_L2"] or ENABLE["Likelihood"]:
+    if ENABLE["Eigen_L2"] or ENABLE["Likelihood"] or ENABLE["Mean_Agreement"] or ENABLE["Latent_Norm"] or ENABLE["Spectral_Gap"] or ENABLE["Spectral_Elbow"]:
         set_seed(get_fit_seed("ours", i))
         A, B, U, V, clusters_np = model._mc_fit(
             rating, key=task_group, scheme="ds", epsilon=1e-5,
@@ -336,141 +340,144 @@ for i in range(N_RUNS):
         metrics["Likelihood"]["cluster_nmi"].append(cluster_nmi)
 
         produced["Likelihood"] = y_pred.astype(int)
-    if ENABLE["Eigen_L2"]:        
-        _, y_pred, hq_workers_pred, biased_workers_pred, spectral = _hq_and_label_infer(
+    if ENABLE["Eigen_L2"] or ENABLE["Mean_Agreement"] or ENABLE["Latent_Norm"] or ENABLE["Spectral_Gap"] or ENABLE["Spectral_Elbow"]:
+        _, y_pred_spec, hq_spec, biased_spec, spectral = _hq_and_label_infer(
             pred_group, R_obs, y_true, worker_label,
-            N_TASK, N_WORKER, N_TASK_GROUPS,hq_ratio = HQ_RATIO,
-            LABEL_MODE="task", verbose=False,
-            MIN_COVERAGE=0, return_spectral=True,
+            N_TASK, N_WORKER, N_TASK_GROUPS, hq_ratio=HQ_RATIO,
+            LABEL_MODE="task", WORKER_SELECTION="spectral",
+            verbose=False, MIN_COVERAGE=0, return_spectral=True, B=B,
         )
-        if DRAW_SPECTRAL:
-            plot_spectral_diagnostics(
-                spectral,
-                save_dir=OUT_DIR,
-                run=i,
-                draw=DRAW_SPECTRAL
-            )
-            
 
-            yt_tier, yp_tier = build_tier_vectors(
-                worker_label, hq_workers_pred, biased_workers_pred,
-                pred_group, task_group, N_TASK_GROUPS)
-            tier_lists["Eigen_L2"]["true"].append(yt_tier)
-            tier_lists["Eigen_L2"]["pred"].append(yp_tier)
+        # Spectral LiSER result.
+        if ENABLE["Eigen_L2"]:
+            if DRAW_SPECTRAL:
+                plot_spectral_diagnostics(
+                    spectral,
+                    save_dir=OUT_DIR,
+                    run=i,
+                    draw=DRAW_SPECTRAL,
+                )
 
-        hq_vote_report(rating, pred_group, hq_workers_pred, N_TASK_GROUPS,
-               OUT_DIR, f"Eigen_L2_run{i}",
-               y_true=y_true, draw=bool(DRAW_HQ_VOTES) and SAVE_RESULTS)
-
-        metrics["Eigen_L2"]["cluster_acc"].append(cluster_acc)
-        metrics["Eigen_L2"]["cluster_ari"].append(cluster_ari)
-        metrics["Eigen_L2"]["cluster_nmi"].append(cluster_nmi)
-
-        produced["Eigen_L2"] = y_pred
-        if ENABLE["Likelihood2"]:
-            V_spec = spectral_to_V(hq_workers_pred, biased_workers_pred,
-                                   N_WORKER, N_TASK_GROUPS)            
-            
-            clusters_spec = tier_centers_in_lf_space(B, V_spec, )
-            if REMOVE_GLOBAL_LQ:
-                warm_worker_mask = spectral["warm_worker_mask"]
-            else:
-                warm_worker_mask = np.ones(N_WORKER, dtype=bool)
-            
-            removed_workers = np.where(~warm_worker_mask)[0]
-            n_removed = len(removed_workers)
-            
-            removed_worker_records.append({
-                "run": i,
-                "remove_global_lq": REMOVE_GLOBAL_LQ,
-                "n_removed": n_removed,
-                "n_kept": N_WORKER - n_removed,
-                "removed_ids": ",".join(map(str, removed_workers)),
-            })
-            
-            print(
-                f"Run {i}: global LQ removal={REMOVE_GLOBAL_LQ}, "
-                f"removed {n_removed}/{N_WORKER} workers "
-                f"({n_removed / N_WORKER:.1%})"
-            )
-
-            
-            model2 = LFGP(lf_dim=N_TASK_GROUPS, n_worker_group=N_TASK_GROUPS,
-                          lambda1=LAMBDA1, lambda2_0=LAMBDA2_0, lambda2_1=LAMBDA2_1)
-            model2._prescreen(rating)
-            A2, B2, U2, V2, clusters2 = model2._mc_fit(
-                rating, key=task_group, scheme="warm", epsilon=1e-5,
-                maxiter=MAXITER, verbose=0,
-                A_init=A, B_init=B,         # the first fit's grouping
-                U_init=pred_group,
-                V_init=V_spec,              # the SPECTRAL tiering
-                clusters_init=clusters_spec,
-                worker_active_mask=warm_worker_mask
-            )
-    
-            cluster_acc2 = model2.task_acc(U2.astype(int), task_group)
-            y_pred2 = model2._mc_infer_by_task(rating)
-
-            pred_group2 = U2.astype(int)
-
-            # Keep globally filtered LQ workers out of the second spectral pass.
-            R_obs_warm = R_obs.copy()
-            R_obs_warm[:, ~warm_worker_mask] = np.nan
-            
-            _, y_pred_e2, hq_workers_pred2, biased_workers_pred2, spectral = _hq_and_label_infer(
-                pred_group2, R_obs_warm, y_true, worker_label,
-                N_TASK, N_WORKER, N_TASK_GROUPS,
-                LABEL_MODE="task", verbose=False,
-                MIN_COVERAGE=0, return_spectral=True,
-            )
-
-                
             if not REAL_DATA:
                 yt_tier, yp_tier = build_tier_vectors(
-                    worker_label, hq_workers_pred2, biased_workers_pred2,
-                    pred_group2, y_true, N_TASK_GROUPS)
-            
-                hq2 = [np.where(V2[:, g] == 1)[0] for g in range(N_TASK_GROUPS)]
-                bi2 = [np.where(V2[:, g] == 2)[0] for g in range(N_TASK_GROUPS)]
-                yt_lik2, yp_lik2 = build_tier_vectors(
-                    worker_label, hq2, bi2, pred_group2, y_true, N_TASK_GROUPS)
-                tier_lists["Likelihood2"]["true"].append(yt_lik2)
-                tier_lists["Likelihood2"]["pred"].append(yp_lik2)
-                
-                # Eigen_L2_v2 keeps the spectral-pass vectors:
-                tier_lists["Eigen_L2_v2"]["true"].append(yt_tier)
-                tier_lists["Eigen_L2_v2"]["pred"].append(yp_tier)
-        
-            hq_vote_report(rating, pred_group2, hq_workers_pred2, N_TASK_GROUPS,
-                   OUT_DIR, f"Eigen_L2_v2_run{i}",
-                   y_true=y_true, draw=bool(DRAW_HQ_VOTES) and SAVE_RESULTS)
-    
-            metrics["Eigen_L2_v2"]["cluster_acc"].append(cluster_acc2)
-            produced["Eigen_L2_v2"] = y_pred_e2
-    
-            metrics["Likelihood2"]["cluster_acc"].append(cluster_acc2)
-            produced["Likelihood2"] = np.nan_to_num(y_pred2, nan=-1).astype(int)
-            
-            
-            if not REAL_DATA:
-                #B_true = np.transpose(worker_lf, (1, 0, 2))
-                clusters_true = true_tier_centers(worker_lf, np.argmax(worker_label, axis=2))
-                plot_worker_lf_pca(
-                    [worker_lf, B, B2],
-                    worker_tier_true=np.argmax(worker_label, axis=2),
-                    clusters_list=[clusters_true, clusters_np, clusters2],
-                    titles=("ground truth", "fit 1 (cold)", "fit 2 (warm)"),
-                    path=out_path(f"worker_lf_pca_run{i}.png"),
-                    draw=bool(DRAW_HQ_VOTES),
+                    worker_label, hq_spec, biased_spec,
+                    pred_group, task_group, N_TASK_GROUPS,
                 )
-            
-            plot_loss_trajectory(
-                model.loss_history, model2.loss_history,
-                acc_cold=model.acc_history, acc_warm=model2.acc_history,
-                path=out_path(f"loss_run{i}.png"),
-                draw=bool(DRAW_HQ_VOTES),
-                title=f"Objective trajectory (run {i})",
+                tier_lists["Eigen_L2"]["true"].append(yt_tier)
+                tier_lists["Eigen_L2"]["pred"].append(yp_tier)
+
+            hq_vote_report(
+                rating, pred_group, hq_spec, N_TASK_GROUPS,
+                OUT_DIR, f"Eigen_L2_run{i}",
+                y_true=y_true, draw=bool(DRAW_HQ_VOTES) and SAVE_RESULTS,
             )
+
+            metrics["Eigen_L2"]["cluster_acc"].append(cluster_acc)
+            metrics["Eigen_L2"]["cluster_ari"].append(cluster_ari)
+            metrics["Eigen_L2"]["cluster_nmi"].append(cluster_nmi)
+            produced["Eigen_L2"] = y_pred_spec
+
+        # Simple mean-agreement worker-selection result.
+        # Reuses the SAME 'spectral' object, so Stage 1, task groups,
+        # agreement matrices, tested workers, and hq_ratio are identical.
+        if ENABLE["Mean_Agreement"]:
+            _, y_pred_mean, hq_mean, biased_mean = infer_labels_from_spectral_hq(
+                pred_group=pred_group,
+                R_obs=R_obs,
+                spectral=spectral,
+                n_task=N_TASK,
+                n_task_groups=N_TASK_GROUPS,
+                label=y_true,
+                label_mode="task",
+                worker_selection="mean_agreement",
+            )
+
+            if not REAL_DATA:
+                yt_tier, yp_tier = build_tier_vectors(
+                    worker_label, hq_mean, biased_mean,
+                    pred_group, task_group, N_TASK_GROUPS,
+                )
+                tier_lists["Mean_Agreement"]["true"].append(yt_tier)
+                tier_lists["Mean_Agreement"]["pred"].append(yp_tier)
+
+            hq_vote_report(
+                rating, pred_group, hq_mean, N_TASK_GROUPS,
+                OUT_DIR, f"Mean_Agreement_run{i}",
+                y_true=y_true, draw=bool(DRAW_HQ_VOTES) and SAVE_RESULTS,
+            )
+
+            metrics["Mean_Agreement"]["cluster_acc"].append(cluster_acc)
+            metrics["Mean_Agreement"]["cluster_ari"].append(cluster_ari)
+            metrics["Mean_Agreement"]["cluster_nmi"].append(cluster_nmi)
+            produced["Mean_Agreement"] = y_pred_mean
+
+        # Latent-factor norm baseline: rank workers by ||B[j, g, :]||_2.
+        # Reuses the exact same Stage-1 B, task partition, eligible workers,
+        # HQ count, and HQ-only label voting rule.
+        if ENABLE["Latent_Norm"]:
+            _, y_pred_lf, hq_lf, biased_lf = infer_labels_from_spectral_hq(
+                pred_group=pred_group, R_obs=R_obs, spectral=spectral,
+                n_task=N_TASK, n_task_groups=N_TASK_GROUPS,
+                label=y_true, label_mode="task", worker_selection="latent_norm",
+            )
+
+            if not REAL_DATA:
+                yt_tier, yp_tier = build_tier_vectors(
+                    worker_label, hq_lf, biased_lf,
+                    pred_group, task_group, N_TASK_GROUPS,
+                )
+                tier_lists["Latent_Norm"]["true"].append(yt_tier)
+                tier_lists["Latent_Norm"]["pred"].append(yp_tier)
+
+            hq_vote_report(
+                rating, pred_group, hq_lf, N_TASK_GROUPS,
+                OUT_DIR, f"Latent_Norm_run{i}",
+                y_true=y_true, draw=bool(DRAW_HQ_VOTES) and SAVE_RESULTS,
+            )
+
+            metrics["Latent_Norm"]["cluster_acc"].append(cluster_acc)
+            metrics["Latent_Norm"]["cluster_ari"].append(cluster_ari)
+            metrics["Latent_Norm"]["cluster_nmi"].append(cluster_nmi)
+            produced["Latent_Norm"] = y_pred_lf
+
+        # Adaptive spectral selection: NO true HQ counts and NO fixed gamma.
+        # All methods share the same fitted task groups and spectral embedding.
+        for method_name, selection_name, k_key, gamma_key in (
+            ("Spectral_Gap", "largest_gap", "k_hat_largest_gap", "gamma_hat_largest_gap"),
+            ("Spectral_Elbow", "geometric_elbow", "k_hat_geometric_elbow", "gamma_hat_geometric_elbow"),
+        ):
+            if not ENABLE[method_name]:
+                continue
+            _, y_pred_adapt, hq_adapt, biased_adapt = infer_labels_from_spectral_hq(
+                pred_group=pred_group, R_obs=R_obs, spectral=spectral,
+                n_task=N_TASK, n_task_groups=N_TASK_GROUPS,
+                label=y_true, label_mode="task", worker_selection=selection_name,
+            )
+            produced[method_name] = y_pred_adapt
+            metrics[method_name]["cluster_acc"].append(cluster_acc)
+            metrics[method_name]["cluster_ari"].append(cluster_ari)
+            metrics[method_name]["cluster_nmi"].append(cluster_nmi)
+
+            if not REAL_DATA:
+                yt_tier, yp_tier = build_tier_vectors(
+                    worker_label, hq_adapt, biased_adapt,
+                    pred_group, task_group, N_TASK_GROUPS,
+                )
+                tier_lists[method_name]["true"].append(yt_tier)
+                tier_lists[method_name]["pred"].append(yp_tier)
+
+            for g in range(N_TASK_GROUPS):
+                adaptive_gamma_records.append({
+                    "run": i + 1, "group": g, "method": method_name,
+                    "k_hat": int(spectral[k_key][g]),
+                    "gamma_hat": float(spectral[gamma_key][g]),
+                    "n_eligible": int(spectral["tested_mask"][:, g].sum()),
+                })
+
+        if DRAW_ADAPTIVE_CUTOFFS and i == 0:
+            plot_spectral_cutoffs(spectral, save_dir=OUT_DIR if SAVE_RESULTS else None,
+                                  run=i + 1, show=not SAVE_RESULTS)
+
     if ENABLE["Eigen_Oracle"]:
         # Upper bound on the spectral step: feed the ground-truth task grouping
         # so that any tiering/label error is attributable to the eigen-decomposition
@@ -479,7 +486,7 @@ for i in range(N_RUNS):
 
         _, y_pred_or, hq_or, biased_or = _hq_and_label_infer(
             oracle_group, R_obs, y_true, worker_label,
-            N_TASK, N_WORKER, N_TASK_GROUPS,
+            N_TASK, N_WORKER, N_TASK_GROUPS, hq_ratio=HQ_RATIO,
             LABEL_MODE="task", verbose=False,
             MIN_COVERAGE=0, return_spectral=False,
         )
@@ -601,6 +608,8 @@ for i in range(N_RUNS):
     # ---- persist after every run so a timeout can't lose finished runs ----
     if SAVE_RESULTS:
         save_json(out_path("metrics_raw.json"), metrics)
+        if adaptive_gamma_records:
+            pd.DataFrame(adaptive_gamma_records).to_csv(out_path("gamma_adaptive_by_group.csv"), index=False)
         pd.DataFrame(removed_worker_records).to_csv(
             out_path("removed_workers.csv"), index=False)
         print(f"[run {i + 1}/{N_RUNS}] done; results saved to {OUT_DIR}")
@@ -641,7 +650,7 @@ save_json(out_path("config.json"),
            "remove_global_lq": REMOVE_GLOBAL_LQ,
            "data_kw": DATA_KW})
 
-for _name in ("Eigen_L2", "Likelihood", "Likelihood2", "Eigen_L2_v2", "Eigen_Oracle"):
+for _name in ("Eigen_L2", "Mean_Agreement", "Latent_Norm", "Spectral_Gap", "Spectral_Elbow", "Likelihood", "Eigen_Oracle"):
     if not SAVE_RESULTS:
         break
     if not ENABLE[_name] or not tier_lists[_name]["true"]:

@@ -1,0 +1,35 @@
+{
+  "run_id": "20261122_234702",
+  "n_runs": 10,
+  "maxiter": 200,
+  "enable": {
+    "Eigen_L2": 1,
+    "Likelihood": 1,
+    "Mean_Agreement": 1,
+    "Latent_Norm": 1,
+    "Eigen_Oracle": 0,
+    "DS": 1,
+    "MV_HQ": 0,
+    "MV": 0,
+    "GLAD": 0,
+    "GTIC": 0,
+    "LFGP": 0,
+    "CBCC": 0
+  },
+  "remove_global_lq": false,
+  "data_kw": {
+    "n_task": 1000,
+    "n_worker": 400,
+    "n_task_groups": 5,
+    "k": 3,
+    "sigma": 1,
+    "obs_prob": 1,
+    "hq_ratio": 0.03333333333333333,
+    "bias_ratio": 0,
+    "delta": 1,
+    "n_classes": 5,
+    "rho": 0,
+    "random": false,
+    "draw_latent_heatmap": false
+  }
+}
