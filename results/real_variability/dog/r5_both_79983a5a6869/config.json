@@ -3,7 +3,7 @@
   "loader": "src.DOG:get_DOG",
   "mode": "both",
   "ratio": 5,
-  "draws": 10,
+  "draws": 5,
   "starts": 3,
   "data_seed": 999,
   "fit_seed": 10000,
